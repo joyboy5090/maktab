@@ -13,6 +13,7 @@ from services.generator import (
     LessonRequirement as CSPLessonReq,
     ScheduledSlot
 )
+from services.generator_cpsat import TimetableGeneratorCPSAT
 
 from database.models import (
     Teacher, Room, SchoolClass, Subject, ClassSubjectAllocation, TimetableEntry
@@ -37,7 +38,8 @@ class TimetableService:
         school_id: str,
         term: int = 1,
         slots_per_day: int = 6,
-        save_partial: bool = False
+        save_partial: bool = False,
+        solver_type: str = "cpsat"
     ) -> Dict[str, Any]:
         """
         1. Maktabga tegishli tanlangan chorak (term) dagi barcha sinflarning
@@ -155,15 +157,25 @@ class TimetableService:
                     )
                 )
 
-        # D. CSP Algoritmini ishga tushirish
-        solver = TimetableGeneratorCSP(
-            classes=csp_classes,
-            teachers=csp_teachers,
-            rooms=csp_rooms,
-            subjects=csp_subjects,
-            requirements=csp_reqs,
-            slots_per_day=slots_per_day
-        )
+        # D. Solver tanlovi: default OR-Tools CP-SAT, zaxira sifatida legacy CSP
+        if solver_type == "legacy":
+            solver = TimetableGeneratorCSP(
+                classes=csp_classes,
+                teachers=csp_teachers,
+                rooms=csp_rooms,
+                subjects=csp_subjects,
+                requirements=csp_reqs,
+                slots_per_day=slots_per_day
+            )
+        else:
+            solver = TimetableGeneratorCPSAT(
+                classes=csp_classes,
+                teachers=csp_teachers,
+                rooms=csp_rooms,
+                subjects=csp_subjects,
+                requirements=csp_reqs,
+                slots_per_day=slots_per_day
+            )
 
         if save_partial:
             solution, unplaced = solver.solve_partial()

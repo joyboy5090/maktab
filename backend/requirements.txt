@@ -11,3 +11,4 @@ bcrypt==5.0.0
 python-multipart==0.0.33
 slowapi==0.1.10
 python-dotenv==1.2.4
+ortools==10.0.0rc1
