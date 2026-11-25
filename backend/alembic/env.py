@@ -24,7 +24,7 @@ if config.config_file_name is not None:
 target_metadata = Base.metadata
 
 def run_migrations_offline() -> None:
-    url = settings.DATABASE_URL
+    url = settings.ALEMBIC_DATABASE_URL or settings.DATABASE_URL
     context.configure(
         url=url,
         target_metadata=target_metadata,
@@ -43,7 +43,7 @@ def do_run_migrations(connection: Connection) -> None:
 
 async def run_async_migrations() -> None:
     connectable = create_async_engine(
-        settings.DATABASE_URL,
+        settings.ALEMBIC_DATABASE_URL or settings.DATABASE_URL,
         poolclass=pool.NullPool,
     )
 

@@ -1,7 +1,7 @@
 from typing import AsyncGenerator
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import declarative_base
-from sqlalchemy import text
+from sqlalchemy import text, event
 from core.config import settings
 from core.rbac import CurrentUser, get_current_user
 from fastapi import Depends
@@ -27,6 +27,10 @@ Base = declarative_base()
 async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
     """Oddiy DB sessiya (auth yoki super-admin operatsiyalari uchun)"""
     async with AsyncSessionLocal() as session:
+        @event.listens_for(session.sync_session, "after_begin")
+        def _set_super_admin_ctx(sync_sess, transaction, connection):
+            connection.execute(text("SELECT set_config('app.is_super_admin', 'on', true)"))
+
         try:
             yield session
             await session.commit()
@@ -41,17 +45,24 @@ async def get_tenant_db(
 ) -> AsyncGenerator[AsyncSession, None]:
     """
     Multi-tenant RLS sessiyasi:
-    PostgreSQL ga joriy maktabning ID sini uzatadi.
-    Shu orqali RLS siyosatlari avtomatik filtrlaydi.
+    Har bir tranzaksiya boshida (after_begin, jumladan commitdan keyin ham)
+    PostgreSQL ga app.current_school_id va app.is_super_admin ni uzatadi.
     """
+    is_super_admin = "on" if current_user.role == "SUPER_ADMIN" else "off"
+    school_id_str = str(current_user.school_id) if current_user.school_id else ""
+
     async with AsyncSessionLocal() as session:
+        @event.listens_for(session.sync_session, "after_begin")
+        def _set_tenant_ctx(sync_sess, transaction, connection):
+            connection.execute(
+                text(
+                    "SELECT set_config('app.is_super_admin', :sa, true), "
+                    "set_config('app.current_school_id', :sid, true)"
+                ),
+                {"sa": is_super_admin, "sid": school_id_str}
+            )
+
         try:
-            if current_user.school_id:
-                # PostgreSQL RLS: set_config parameterized query xavfsiz va $1 bind parametrlarini qo'llab-quvvatlaydi
-                await session.execute(
-                    text("SELECT set_config('app.current_school_id', :sid, true)"),
-                    {"sid": str(current_user.school_id)}
-                )
             yield session
             await session.commit()
         except Exception:

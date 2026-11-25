@@ -38,10 +38,18 @@ class Settings(BaseSettings):
     
     # Database (PostgreSQL Multi-tenant)
     DATABASE_URL: str = ""
+    ALEMBIC_DATABASE_URL: str = ""
 
     @field_validator("DATABASE_URL", mode="before")
     @classmethod
     def assemble_db_connection(cls, v: str) -> str:
+        return get_async_db_url(v)
+
+    @field_validator("ALEMBIC_DATABASE_URL", mode="before")
+    @classmethod
+    def assemble_alembic_db_connection(cls, v: str) -> str:
+        if not v:
+            return ""
         return get_async_db_url(v)
     
     # JWT Security
