@@ -90,7 +90,6 @@ maktab/
 │       └── index.ts              # TypeScript interfeyslari
 ├── docker-compose.yml            # Frontend, Backend va Postgres kompozitsiyasi
 ├── Dockerfile                    # Next.js standalone multi-stage build
-├── schema.sql                    # PostgreSQL to'liq DDL, indekslar va triggerlar
 └── README.md
 ```
 
@@ -98,22 +97,27 @@ maktab/
 
 ## 🗄️ Alembic Migratsiyalar Qo'llanmasi
 
-Alembic async rejimda `asyncpg` drayveri bilan to'liq sozlangan.
+Ma'lumotlar bazasi sxemasining yagona manbai **Alembic** hisoblanadi (`backend/database/models.py` asosida).
 
-1. **Yangi migratsiya yaratish (avtomatik tekshiruv bilan):**
+1. **Toza bazani initsializatsiya qilish:**
+   ```bash
+   cd backend
+   alembic upgrade head
+   python init_db.py
+   ```
+
+2. **Modellardagi o'zgarishlardan yangi migratsiya yaratish:**
    ```bash
    cd backend
    alembic revision --autogenerate -m "yangi_ozgarishlar_nomi"
    ```
 
-2. **Migratsiyani bazaga qo'llash (Head):**
-   ```bash
-   alembic upgrade head
-   ```
-
 3. **Oxirgi migratsiyani bekor qilish (Rollback):**
    ```bash
+   cd backend
    alembic downgrade -1
+   # Yoki barcha jadvallarni tozalash:
+   alembic downgrade base
    ```
 
 ---

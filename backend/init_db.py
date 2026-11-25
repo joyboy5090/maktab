@@ -17,7 +17,6 @@ async_url = get_async_db_url(raw_url)
 
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy import select
-from database.connection import Base
 from database.models import (
     School, User, Teacher, Room, SchoolClass, Subject, ClassSubjectAllocation
 )
@@ -26,11 +25,6 @@ engine = create_async_engine(async_url, echo=False)
 AsyncSessionLocal = async_sessionmaker(bind=engine, expire_on_commit=False)
 
 async def init():
-    print("1. Jadvallar yaratilmoqda...")
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    print("   ✓ Barcha jadvallar yaratildi!")
-
     async with AsyncSessionLocal() as session:
         # Tekshiramiz: maktab bormi?
         res = await session.execute(select(School).limit(1))

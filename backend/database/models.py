@@ -1,7 +1,7 @@
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlalchemy import (
-    Column, String, Boolean, Integer, Float, ForeignKey, DateTime, Text, UniqueConstraint, Index
+    Column, String, Boolean, Integer, Float, ForeignKey, DateTime, Text, UniqueConstraint, Index, CheckConstraint
 )
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship
@@ -9,6 +9,9 @@ from database.connection import Base
 
 def generate_uuid():
     return str(uuid.uuid4())
+
+def utc_now():
+    return datetime.now(timezone.utc)
 
 class School(Base):
     __tablename__ = "schools"
@@ -21,8 +24,8 @@ class School(Base):
     phone = Column(String(50))
     address = Column(Text)
     is_active = Column(Boolean, default=True, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), default=utc_now)
+    updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
 
     users = relationship("User", back_populates="school", cascade="all, delete-orphan")
     teachers = relationship("Teacher", back_populates="school", cascade="all, delete-orphan")
@@ -40,9 +43,9 @@ class Subscription(Base):
     status = Column(String(50), default="ACTIVE", nullable=False)
     max_students = Column(Integer, default=1000, nullable=False)
     max_teachers = Column(Integer, default=60, nullable=False)
-    valid_until = Column(DateTime, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    valid_until = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=utc_now)
+    updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
 
     __table_args__ = (
         Index("idx_subscriptions_school", "school_id"),
@@ -60,12 +63,13 @@ class User(Base):
     last_name = Column(String(100), nullable=False)
     phone = Column(String(50))
     is_active = Column(Boolean, default=True, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), default=utc_now)
+    updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
 
     school = relationship("School", back_populates="users")
 
     __table_args__ = (
+        CheckConstraint("role IN ('SUPER_ADMIN', 'SCHOOL_ADMIN', 'TEACHER')", name="ck_users_role"),
         Index("idx_users_email", "email"),
         Index("idx_users_school", "school_id"),
     )
@@ -80,8 +84,8 @@ class Teacher(Base):
     primary_subject = Column(String(500))
     max_weekly_hours = Column(Integer, default=24, nullable=False)
     max_daily_hours = Column(Integer, default=5, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), default=utc_now)
+    updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
 
     school = relationship("School", back_populates="teachers")
 
@@ -101,6 +105,10 @@ class TeacherAvailability(Base):
     is_available = Column(Boolean, default=True, nullable=False)
 
     __table_args__ = (
+        CheckConstraint(
+            "day IN ('Dushanba', 'Seshanba', 'Chorshanba', 'Payshanba', 'Juma', 'Shanba', 'MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY')",
+            name="ck_teacher_avail_day"
+        ),
         UniqueConstraint("school_id", "teacher_id", "day", "lesson_order", name="uq_teacher_avail_slot"),
         Index("idx_teacher_avail_school", "school_id"),
     )
@@ -114,11 +122,15 @@ class Room(Base):
     name = Column(String(100))
     capacity = Column(Integer, default=30, nullable=False)
     room_type = Column(String(50), default="GENERAL", nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), default=utc_now)
+    updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
 
     school = relationship("School", back_populates="rooms")
     __table_args__ = (
+        CheckConstraint(
+            "room_type IN ('GENERAL', 'LABORATORY', 'GYM', 'COMPUTER_LAB', 'LANGUAGE_LAB', 'Oddiy xona', 'Laboratoriya', 'Sport zal', 'Kompyuter xonasi')",
+            name="ck_rooms_room_type"
+        ),
         UniqueConstraint("school_id", "room_number", name="uq_school_room"),
         Index("idx_rooms_school", "school_id"),
     )
@@ -134,11 +146,15 @@ class SchoolClass(Base):
     shift = Column(String(50), default="MORNING", nullable=False)
     language = Column(String(50), default="UZBEK", nullable=False)
     class_master = Column(String(200), nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), default=utc_now)
+    updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
 
     school = relationship("School", back_populates="classes")
     __table_args__ = (
+        CheckConstraint(
+            "shift IN ('MORNING', 'AFTERNOON', '1-smena', '2-smena')",
+            name="ck_classes_shift"
+        ),
         UniqueConstraint("school_id", "name", name="uq_school_class"),
         Index("idx_classes_school", "school_id"),
     )
@@ -152,11 +168,15 @@ class Subject(Base):
     short_code = Column(String(20), nullable=False)
     required_room_type = Column(String(50), default="GENERAL", nullable=False)
     color_hex = Column(String(10), default="#1E40AF")
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), default=utc_now)
+    updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
 
     school = relationship("School", back_populates="subjects")
     __table_args__ = (
+        CheckConstraint(
+            "required_room_type IN ('GENERAL', 'LABORATORY', 'GYM', 'COMPUTER_LAB', 'LANGUAGE_LAB', 'Oddiy xona', 'Laboratoriya', 'Sport zal', 'Kompyuter xonasi')",
+            name="ck_subjects_room_type"
+        ),
         UniqueConstraint("school_id", "short_code", name="uq_school_subject_code"),
         Index("idx_subjects_school", "school_id"),
     )
@@ -176,8 +196,8 @@ class ClassSubjectAllocation(Base):
     weeks_in_quarter = Column(Integer, default=9, nullable=False)
     weekly_hours = Column(Float, nullable=False)
     max_hours_per_day = Column(Integer, default=2, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), default=utc_now)
+    updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
 
     __table_args__ = (
         UniqueConstraint("school_id", "class_id", "subject_id", "term", name="uq_class_sub_term"),
@@ -194,9 +214,13 @@ class TimeSlot(Base):
     shift = Column(String(50), default="MORNING", nullable=False)
     start_time = Column(String(20), nullable=False)
     end_time = Column(String(20), nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), default=utc_now)
 
     __table_args__ = (
+        CheckConstraint(
+            "shift IN ('MORNING', 'AFTERNOON', '1-smena', '2-smena')",
+            name="ck_time_slots_shift"
+        ),
         UniqueConstraint("school_id", "shift", "lesson_order", name="uq_school_shift_slot"),
         Index("idx_timeslots_school", "school_id"),
     )
@@ -213,10 +237,14 @@ class TimetableEntry(Base):
     subject_id = Column(UUID(as_uuid=False), ForeignKey("subjects.id", ondelete="CASCADE"), nullable=False)
     teacher_id = Column(UUID(as_uuid=False), ForeignKey("teachers.id", ondelete="SET NULL"), nullable=True)
     room_id = Column(UUID(as_uuid=False), ForeignKey("rooms.id", ondelete="CASCADE"), nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), default=utc_now)
+    updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
 
     __table_args__ = (
+        CheckConstraint(
+            "day IN ('Dushanba', 'Seshanba', 'Chorshanba', 'Payshanba', 'Juma', 'Shanba', 'MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY')",
+            name="ck_timetable_day"
+        ),
         UniqueConstraint("school_id", "term", "day", "lesson_order", "class_id", name="uq_class_slot_term"),
         Index("idx_timetable_school_term", "school_id", "term"),
         Index("idx_timetable_class", "class_id"),
@@ -234,7 +262,7 @@ class AuditLog(Base):
     record_id = Column(String(100), nullable=False)
     old_data = Column(JSONB, nullable=True)
     new_data = Column(JSONB, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), default=utc_now)
 
     __table_args__ = (
         Index("idx_audit_logs_school", "school_id"),
