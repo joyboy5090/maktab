@@ -15,17 +15,12 @@
 
 ---
 
-## 🔒 Xavfsizlik & Arxitektura Yaxshilanishlari
+## 🔒 Xavfsizlik & Arxitektura
 
-1. **SQL Injection Himoyasi:** `get_tenant_db` sessiyasida `SELECT set_config('app.current_school_id', :sid, true)` orqali xavfsiz parametrlangan so'rov joriy etildi.
-2. **Haqiqiy Ma'murlar Bazasida Saqlanadi:** Hardcoded `admin123` demo fallbacklari olib tashlandi. `init_db.py` orqali xavfsiz bcrypt-xeshli admin yaratiladi.
-3. **Frontend Autentifikatsiya:**
-   - Yangi to'liq `/login` sahifasi (React Hook Form + Zod validatsiyasi).
-   - `ProtectedRoute` yo'l himoyachisi.
-   - 7 kunlik **Refresh Token** va avtomatik interceptor yangilanishi.
-4. **Rate Limiting:** SlowAPI orqali `/auth/login` ga 5 ta urinish/daqiqa, boshqa endpointlarga 100 ta so'rov/daqiqa limiti qo'yildi.
-5. **Parol Siyosati:** Kamida 8 belgi, 1 ta katta harf va 1 ta raqam majburiy.
-6. **SECRET_KEY:** Majburiy `.env` tekshiruvi.
+1. **PostgreSQL Row-Level Security (RLS):** `school_id` ga ega barcha tenant jadvallarda `ENABLE`/`FORCE ROW LEVEL SECURITY` yoqilgan; ilova `maktab_app` (`NOBYPASSRLS`) roli bilan ishlaydi va `after_begin` event listener har bir tranzaksiyada `app.current_school_id` ni o'rnatadi.
+2. **HttpOnly Cookie + Refresh Token Rotatsiyasi:** `refresh_token` `jti` bilan bazada saqlanadi, `HttpOnly; SameSite=Lax` cookie sifatida beriladi va reuse detection bilan rotatsiya qilinadi; `access_token` (15 daqiqa) frontendda faqat xotirada saqlanadi.
+3. **Rate Limiting & Parol Siyosati:** SlowAPI orqali `/auth/login` ga 5 urinish/daqiqa cheklovi, UTF-8 da 8..72 bayt oralig'ida parol tekshiruvi va timing-attack himoyasi.
+4. **Asinxron Jadval Generatsiyasi:** `POST /api/v1/timetable/generate` `202 Accepted` qaytaradi; OR-Tools CP-SAT yechuvchi alohida jarayonda (`ProcessPoolExecutor` / `worker`) ishlaydi.
 
 ---
 
@@ -138,41 +133,43 @@ Ma'lumotlar bazasi sxemasining yagona manbai **Alembic** hisoblanadi (`backend/d
 
 ## 🧪 Testlarni Ishga Tushirish
 
-### Backend Testlar (Pytest):
+### Backend va Frontend Testlar:
 ```bash
+# Backend (pytest)
 cd backend
+pip install -r requirements-dev.txt
 pytest -v
+
+# Frontend (Vitest)
+npm test
 ```
-Testlar quyidagilarni o'z ichiga oladi:
-- `test_auth.py` — Parol siyosati, login, 7-kunlik refresh token, va profil tekshiruvi.
-- `test_teachers.py` — O'qituvchilar CRUD operatsiyalari, sahifalash, qidiruv va 404 tekshiruvi.
-- `test_timetable.py` — Jadvalni olish va CSP generator API integratsiyasi.
-- `test_generator.py` — CSP algoritm qat'iy va yumshoq cheklovlari, smena va xona normalizatsiyasi.
 
 ---
 
 ## 🐳 Docker Orqali Ishga Tushirish
 
-Tizimni (Frontend, Backend va PostgreSQL) bitta buyruq bilan konteynerlarda ko'tarish:
-
-```bash
-docker-compose up --build -d
-```
-
-- **Frontend:** `http://localhost:3000`
-- **Backend API:** `http://localhost:8000`
-- **Swagger Docs:** `http://localhost:8000/docs`
+1. `.env.example` dan `.env` faylini yarating va barcha majburiy o'zgaruvchilarni (`POSTGRES_PASSWORD`, `SECRET_KEY`, `DATABASE_URL`, `ALEMBIC_DATABASE_URL`, `DEFAULT_ADMIN_EMAIL`, `DEFAULT_ADMIN_PASSWORD`) to'ldiring:
+   ```bash
+   cp .env.example .env
+   ```
+2. Barcha xizmatlarni (`postgres`, `backend`, `worker`, `frontend`) ishga tushiring:
+   ```bash
+   docker compose up --build -d
+   ```
 
 ---
 
 ## 💻 Mahalliy Dasturlash Rejimida Ishga Tushirish
 
-### 1. Backend:
+### 1. Backend & Worker:
 ```bash
 cd backend
 pip install -r requirements.txt
-python init_db.py  # Bazani va boshlang'ich adminni sozlash
+alembic upgrade head
+python init_db.py
 uvicorn main:app --reload --port 8000
+# Alohida worker (agar PROCESS_JOBS_EXTERNALLY=true bo'lsa):
+python -m services.worker
 ```
 
 ### 2. Frontend:

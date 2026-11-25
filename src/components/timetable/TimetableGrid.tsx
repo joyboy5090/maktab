@@ -144,7 +144,92 @@ export const TimetableGrid: React.FC<{ refreshKey?: number }> = ({ refreshKey })
     }
   };
 
-  // Excel / CSV Export
+  // Real Excel (.xlsx) Export with 3 sheets (Sinf, O'qituvchi, Xona)
+  const handleExportXlsx = async () => {
+    try {
+      const ExcelJS = (await import('exceljs')).default;
+      const workbook = new ExcelJS.Workbook();
+
+      // 1. Sinf bo'yicha varaq
+      const classSheet = workbook.addWorksheet("Sinf bo'yicha");
+      classSheet.addRow(['Sinf', 'Kun', 'Soat', 'Vaqt', 'Fan', "O'qituvchi", 'Xona']);
+      const sortedByClass = [...dbEntries].sort(
+        (a, b) => a.className.localeCompare(b.className) || DAYS.indexOf(a.day) - DAYS.indexOf(b.day) || a.lessonOrder - b.lessonOrder
+      );
+      sortedByClass.forEach((item) => {
+        classSheet.addRow([
+          item.className,
+          item.day,
+          `${item.lessonOrder}-soat`,
+          `${item.startTime}-${item.endTime}`,
+          item.subjectName,
+          item.teacherName,
+          item.roomNumber,
+        ]);
+      });
+
+      // 2. O'qituvchi bo'yicha varaq
+      const teacherSheet = workbook.addWorksheet("O'qituvchi bo'yicha");
+      teacherSheet.addRow(["O'qituvchi", 'Kun', 'Soat', 'Vaqt', 'Sinf', 'Fan', 'Xona']);
+      const sortedByTeacher = [...dbEntries].sort(
+        (a, b) => a.teacherName.localeCompare(b.teacherName) || DAYS.indexOf(a.day) - DAYS.indexOf(b.day) || a.lessonOrder - b.lessonOrder
+      );
+      sortedByTeacher.forEach((item) => {
+        teacherSheet.addRow([
+          item.teacherName,
+          item.day,
+          `${item.lessonOrder}-soat`,
+          `${item.startTime}-${item.endTime}`,
+          item.className,
+          item.subjectName,
+          item.roomNumber,
+        ]);
+      });
+
+      // 3. Xona bo'yicha varaq
+      const roomSheet = workbook.addWorksheet("Xona bo'yicha");
+      roomSheet.addRow(['Xona', 'Kun', 'Soat', 'Vaqt', 'Sinf', 'Fan', "O'qituvchi"]);
+      const sortedByRoom = [...dbEntries].sort(
+        (a, b) => a.roomNumber.localeCompare(b.roomNumber) || DAYS.indexOf(a.day) - DAYS.indexOf(b.day) || a.lessonOrder - b.lessonOrder
+      );
+      sortedByRoom.forEach((item) => {
+        roomSheet.addRow([
+          item.roomNumber,
+          item.day,
+          `${item.lessonOrder}-soat`,
+          `${item.startTime}-${item.endTime}`,
+          item.className,
+          item.subjectName,
+          item.teacherName,
+        ]);
+      });
+
+      [classSheet, teacherSheet, roomSheet].forEach((sheet) => {
+        sheet.getRow(1).font = { bold: true };
+        sheet.columns.forEach((col) => {
+          col.width = 20;
+        });
+      });
+
+      const buffer = await workbook.xlsx.writeBuffer();
+      const blob = new Blob([buffer], {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `maktab_dars_jadvali.xlsx`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+      toast.success("Dars jadvali Excel (.xlsx) fayli yuklandi");
+    } catch (err: any) {
+      toast.error("Excel eksportida xatolik: " + (err.message || "Noma'lum"));
+    }
+  };
+
+  // CSV Export
   const handleExportCsv = () => {
     const headers = ['Soat', 'Vaqt', ...DAYS];
     const rows = TIME_SLOTS.map((slot) => {
@@ -206,12 +291,20 @@ export const TimetableGrid: React.FC<{ refreshKey?: number }> = ({ refreshKey })
             <span>Chop etish</span>
           </button>
           <button
-            onClick={handleExportCsv}
+            onClick={handleExportXlsx}
             className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-gray-700 bg-white border border-gray-200 rounded-xl hover:bg-gray-50 shadow-sm transition"
-            title="Excel / CSV formatida eksport"
+            title="Haqiqiy Excel (.xlsx) formatida eksport (sinf, o'qituvchi, xona varaqlari)"
           >
             <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" />
-            <span>Excel (CSV)</span>
+            <span>Excel (.xlsx)</span>
+          </button>
+          <button
+            onClick={handleExportCsv}
+            className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-gray-700 bg-white border border-gray-200 rounded-xl hover:bg-gray-50 shadow-sm transition"
+            title="CSV formatida eksport"
+          >
+            <FileSpreadsheet className="w-3.5 h-3.5 text-gray-500" />
+            <span>CSV</span>
           </button>
           <button
             onClick={handleExportPdf}
