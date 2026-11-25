@@ -37,6 +37,9 @@ yarn-error.log*
 .coverage
 htmlcov/
 
+# Shaxsiy ma'lumotlar (PII) saqlovchi fayllar
+backend/workload_data.csv
+
 # IDE & OS
 .vscode/
 .idea/
