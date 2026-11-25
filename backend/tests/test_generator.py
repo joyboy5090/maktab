@@ -1,4 +1,5 @@
 import pytest
+import random
 import time
 from services.generator import (
     normalize_shift,
@@ -10,6 +11,7 @@ from services.generator import (
     Subject,
     LessonRequirement,
 )
+from services.timetable_service import TimetableService
 
 def test_normalize_shift():
     assert normalize_shift("1-smena") == "MORNING"
@@ -22,6 +24,8 @@ def test_normalize_room_type():
     assert normalize_room_type("Kimyo laboratoriyasi") == "LABORATORY"
     assert normalize_room_type("Sport zal") == "GYM"
     assert normalize_room_type("Kompyuter xonasi") == "COMPUTER_LAB"
+    assert normalize_room_type("Adabiyot") == "GENERAL"
+    assert normalize_room_type("Matematika") == "GENERAL"
     assert normalize_room_type(None) == "GENERAL"
 
 def test_csp_generator_simple_solve():
@@ -223,3 +227,145 @@ def test_timeout_returns_none_when_impossible():
     csp = TimetableGeneratorCSP(classes, teachers, rooms, subjects, requirements, timeout_seconds=0.1)
     solution = csp.solve()
     assert solution is None
+    assert len(csp.unplaced) > 0
+    assert "reason" in csp.unplaced[0]
+
+
+def test_parse_unavailable_slots():
+    parsed = TimetableService._parse_unavailable_slots([
+        ["Dushanba", 1],
+        {"day": "Juma", "slot": 6},
+    ])
+    assert parsed == {("Dushanba", 1), ("Juma", 6)}
+
+
+def test_property_random_inputs_zero_conflicts_and_constraints_respected():
+    """
+    Property-test: 20 ta tasodifiy maktab konfiguratsiyasi uchun:
+    - Nol teacher/room/sinf to'qnashuvi
+    - unavailable_slots, max_daily_hours, max_weekly_hours, xona turi cheklovlari buzilmaydi
+    - len(scheduled) + len(unplaced) == len(requirements)
+    """
+    days = TimetableGeneratorCSP.DAYS
+    for seed in range(20):
+        rng = random.Random(seed)
+        num_classes = rng.randint(2, 5)
+        classes = [
+            SchoolClass(
+                id=f"c_{i}",
+                name=f"{5 + i}-A",
+                student_count=rng.randint(18, 32),
+                shift=rng.choice(["MORNING", "AFTERNOON"]),
+            )
+            for i in range(num_classes)
+        ]
+
+        num_teachers = rng.randint(3, 7)
+        teachers = []
+        for i in range(num_teachers):
+            unavail = {
+                (rng.choice(days), rng.randint(1, 6))
+                for _ in range(rng.randint(0, 4))
+            }
+            teachers.append(
+                Teacher(
+                    id=f"t_{i}",
+                    name=f"Teacher {i}",
+                    max_daily_hours=rng.randint(2, 5),
+                    max_weekly_hours=rng.randint(4, 20),
+                    unavailable_slots=unavail,
+                )
+            )
+
+        rooms = [
+            Room(id=f"r_gen_{i}", number=f"10{i}", capacity=35, room_type="GENERAL")
+            for i in range(num_classes)
+        ] + [
+            Room(id="r_it", number="IT-1", capacity=35, room_type="COMPUTER_LAB"),
+            Room(id="r_gym", number="Sport", capacity=50, room_type="GYM"),
+            Room(id="r_lab", number="Lab-1", capacity=35, room_type="LABORATORY"),
+        ]
+
+        subjects = [
+            Subject(id="s_mat", name="Matematika", short_code="MAT", required_room_type="GENERAL"),
+            Subject(id="s_inf", name="Informatika", short_code="INF", required_room_type="COMPUTER_LAB"),
+            Subject(id="s_spo", name="Jismoniy tarbiya", short_code="SPO", required_room_type="GYM"),
+            Subject(id="s_kim", name="Kimyo", short_code="KIM", required_room_type="LABORATORY"),
+        ]
+
+        requirements = []
+        num_reqs = rng.randint(10, 35)
+        for i in range(num_reqs):
+            cls_idx = rng.randrange(num_classes)
+            subj = rng.choice(subjects)
+            teacher = rng.choice(teachers)
+            pref = f"r_gen_{cls_idx}" if subj.required_room_type == "GENERAL" else None
+            requirements.append(
+                LessonRequirement(
+                    id=f"req_{seed}_{i}",
+                    class_id=classes[cls_idx].id,
+                    subject_id=subj.id,
+                    teacher_id=teacher.id,
+                    preferred_room_id=pref,
+                    max_per_day=2,
+                )
+            )
+
+        csp = TimetableGeneratorCSP(
+            classes=classes,
+            teachers=teachers,
+            rooms=rooms,
+            subjects=subjects,
+            requirements=requirements,
+            slots_per_day=6,
+            timeout_seconds=5.0,
+        )
+        scheduled, unplaced = csp.solve_partial()
+
+        assert len(scheduled) + len(unplaced) == len(requirements)
+
+        teacher_map = {t.id: t for t in teachers}
+        class_map = {c.id: c for c in classes}
+        subj_map = {s.id: s for s in subjects}
+
+        teacher_occ = set()
+        room_occ = set()
+        class_occ = set()
+        t_daily = {}
+        t_weekly = {}
+
+        for entry in scheduled:
+            c = class_map[entry.lesson.class_id]
+            shift = normalize_shift(c.shift)
+            s = subj_map[entry.lesson.subject_id]
+
+            # Zero class conflict
+            c_key = (entry.day, entry.slot, c.id)
+            assert c_key not in class_occ
+            class_occ.add(c_key)
+
+            # Zero room conflict
+            r_key = (shift, entry.day, entry.slot, entry.room.id)
+            assert r_key not in room_occ
+            room_occ.add(r_key)
+
+            # Zero teacher conflict & teacher constraints
+            if entry.lesson.teacher_id:
+                t_key = (shift, entry.day, entry.slot, entry.lesson.teacher_id)
+                assert t_key not in teacher_occ
+                teacher_occ.add(t_key)
+
+                teacher = teacher_map[entry.lesson.teacher_id]
+                assert (entry.day, entry.slot) not in teacher.unavailable_slots
+                t_daily[(teacher.id, entry.day)] = t_daily.get((teacher.id, entry.day), 0) + 1
+                t_weekly[teacher.id] = t_weekly.get(teacher.id, 0) + 1
+                assert t_daily[(teacher.id, entry.day)] <= teacher.max_daily_hours
+                assert t_weekly[teacher.id] <= teacher.max_weekly_hours
+
+            # Room specialization & preferred room
+            req_type = normalize_room_type(s.required_room_type)
+            r_type = normalize_room_type(entry.room.room_type)
+            if req_type in ("COMPUTER_LAB", "GYM", "LABORATORY"):
+                assert r_type == req_type
+            elif entry.lesson.preferred_room_id:
+                assert entry.room.id == entry.lesson.preferred_room_id

@@ -183,6 +183,7 @@ class AllocationResponse(BaseModel):
 class GenerateTimetableRequest(BaseModel):
     term: int = 1
     slots_per_day: int = 6
+    save_partial: bool = False
 
 class TimetableItemResponse(BaseModel):
     id: str

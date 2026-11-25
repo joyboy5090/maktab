@@ -132,7 +132,7 @@ Ma'lumotlar bazasi sxemasining yagona manbai **Alembic** hisoblanadi (`backend/d
   - Xona bir vaqtda 2 ta darsga berilmaydi.
   - Laboratoriya va sport zallariga moslik qat'iy tekshiriladi.
 - **Yumshoq Cheklovlar (Soft Constraints):** O'qituvchi jadvalidagi "oynalar" (bo'sh soatlar) jarimalar orqali minimallashtiriladi.
-- **Tezlik va Xavfsizlik:** 30 soniyalik `timeout_seconds`, 30 ta eng yaxshi nomzodlar qidiruvi (`max_candidates=30`) va random restart (3 urinish) mavjud.
+- **Tezlik va Xavfsizlik:** `timeout_seconds` va `max_candidates` cheklovlari bilan qat'iy ziddiyatsiz qidiruv (to'qnashuvli joylashtirishga yo'l qo'yilmaydi).
 
 ---
 

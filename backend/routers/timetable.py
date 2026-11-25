@@ -31,10 +31,11 @@ async def generate_timetable(
         db=db,
         school_id=current_user.school_id,
         term=req.term,
-        slots_per_day=req.slots_per_day
+        slots_per_day=req.slots_per_day,
+        save_partial=req.save_partial
     )
 
-    if not result.get("success"):
+    if not result.get("success") and result.get("status") != "partial":
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=result.get("message")

@@ -4,9 +4,8 @@ Implements Hard & Soft Constraints, shift normalization, teacher & student workl
 gap elimination, specialized room matching, candidate grouping, randomized restart, and timeout.
 """
 from dataclasses import dataclass, field
-from typing import List, Dict, Tuple, Optional, Set, Callable
+from typing import List, Dict, Tuple, Optional, Set, Callable, Any
 import time
-import random
 
 # --- STANDARTLASHTIRISH VA NORMALIZATSIYA ---
 
@@ -21,20 +20,33 @@ def normalize_shift(shift: Optional[str]) -> str:
         return "AFTERNOON"
     return "MORNING"
 
+ROOM_TYPE_MAP: Dict[str, str] = {
+    "GENERAL": "GENERAL",
+    "ODDIY XONA": "GENERAL",
+    "ODDIY": "GENERAL",
+    "LANGUAGE_LAB": "GENERAL",
+    "COMPUTER_LAB": "COMPUTER_LAB",
+    "KOMPYUTER XONASI": "COMPUTER_LAB",
+    "KOMPYUTER": "COMPUTER_LAB",
+    "IT-ZAL": "COMPUTER_LAB",
+    "IT": "COMPUTER_LAB",
+    "GYM": "GYM",
+    "SPORT ZAL": "GYM",
+    "SPORTZAL": "GYM",
+    "SPORT": "GYM",
+    "LABORATORY": "LABORATORY",
+    "LABORATORIYA": "LABORATORY",
+    "KIMYO LABORATORIYASI": "LABORATORY",
+    "FIZIKA LABORATORIYASI": "LABORATORY",
+    "BIOLOGIYA LABORATORIYASI": "LABORATORY",
+}
+
 def normalize_room_type(rt: Optional[str]) -> str:
-    """Xona turlarini standart kodlarga normalashtiradi"""
+    """Xona turlarini aniq xarita (map) orqali standart kodlarga normalashtiradi"""
     if not rt:
         return "GENERAL"
     u = str(rt).upper().strip()
-    if u in ("COMPUTER_LAB", "GYM", "LABORATORY", "GENERAL"):
-        return u
-    if "KOMP" in u or "IT" in u or "INF" in u:
-        return "COMPUTER_LAB"
-    if "SPORT" in u or "GYM" in u:
-        return "GYM"
-    if "LAB" in u or "KIMYO" in u or "FIZIKA" in u or "BIOLOGIYA" in u:
-        return "LABORATORY"
-    return "GENERAL"
+    return ROOM_TYPE_MAP.get(u, "GENERAL")
 
 # --- DATA MODELLAR ---
 
@@ -132,6 +144,7 @@ class TimetableGeneratorCSP:
 
         # Natija: lesson_id -> ScheduledSlot
         self.assignments: Dict[str, ScheduledSlot] = {}
+        self.unplaced: List[Dict[str, Any]] = []
         self.start_time: float = 0.0
         self.is_timed_out: bool = False
 
@@ -164,11 +177,13 @@ class TimetableGeneratorCSP:
 
                 # a) O'qituvchining kunlik maksimal soat limiti
                 cur_daily_hours = self.teacher_daily_count.get((lesson.teacher_id, day), 0)
-                daily_limit = max(teacher.max_daily_hours, self.slots_per_day)
-                if cur_daily_hours >= daily_limit:
+                if cur_daily_hours >= teacher.max_daily_hours:
                     return False
 
-                # b) O'qituvchining haftalik maksimal soat limiti olib tashlandi (cheksiz)
+                # b) O'qituvchining haftalik maksimal soat limiti
+                cur_weekly_hours = self.teacher_weekly_count.get(lesson.teacher_id, 0)
+                if cur_weekly_hours >= teacher.max_weekly_hours:
+                    return False
 
         # 3. Sinf shu vaqtda boshqa darsda emasmi?
         if (day, slot, lesson.class_id) in self.class_occupancy:
@@ -333,7 +348,7 @@ class TimetableGeneratorCSP:
         del self.assignments[lesson.id]
 
     def reset_state(self):
-        """Urinishlar (Restarts) orasida barcha tuzilmalarni to'liq tozalash"""
+        """Urinishlar orasida barcha tuzilmalarni to'liq tozalash"""
         self.teacher_occupancy.clear()
         self.room_occupancy.clear()
         self.class_occupancy.clear()
@@ -343,30 +358,59 @@ class TimetableGeneratorCSP:
         self.class_daily_slots.clear()
         self.daily_subject_count.clear()
         self.assignments.clear()
+        self.unplaced.clear()
 
-    def solve(self) -> Optional[List[ScheduledSlot]]:
+    def _build_unplaced_entry(self, lesson: LessonRequirement, reason: str) -> Dict[str, Any]:
+        cls_obj = self.classes.get(lesson.class_id)
+        subj_obj = self.subjects.get(lesson.subject_id)
+        teacher_obj = self.teachers.get(lesson.teacher_id) if lesson.teacher_id else None
+        return {
+            "lesson_id": lesson.id,
+            "class_id": lesson.class_id,
+            "class_name": cls_obj.name if cls_obj else lesson.class_id,
+            "subject_id": lesson.subject_id,
+            "subject_name": subj_obj.name if subj_obj else lesson.subject_id,
+            "teacher_id": lesson.teacher_id,
+            "teacher_name": teacher_obj.name if teacher_obj else None,
+            "reason": reason,
+        }
+
+    def _get_candidate_rooms(self, lesson: LessonRequirement) -> List[Room]:
+        subject = self.subjects[lesson.subject_id]
+        req_type = normalize_room_type(subject.required_room_type)
+        if req_type in ("COMPUTER_LAB", "GYM", "LABORATORY"):
+            return [r for r in self.rooms.values() if normalize_room_type(r.room_type) == req_type]
+        if lesson.preferred_room_id and lesson.preferred_room_id in self.rooms:
+            return [self.rooms[lesson.preferred_room_id]]
+        return list(self.rooms.values())
+
+    def _run_solver(self) -> Tuple[List[ScheduledSlot], List[Dict[str, Any]]]:
         """
-        Ziddiyatsiz va kunlar bo'yicha mukammal muvozanatlashgan dars jadvali generatsiyasi:
-        1. Kunlar bo'yicha darslar soni teng taqsimlanadi (haftasiga 6 kun, har kunga 4-5 tadan dars).
-        2. Sinf darslari 1-soatdan boshlanadi va bo'sh soatlarsiz (derazasiz) ketma-ket joylashtiriladi.
-        3. Barcha 41 ta sinfning barcha darslari (100%) to'liq jadvalga kiritiladi.
+        Qat'iy ziddiyatsiz dars jadvali generatsiyasi:
+        Hech qanday holatda o'qituvchi, xona, sinf to'qnashuvi yoki cheklov buzilishiga yo'l qo'ymaydi.
+        Joylashmagan darslar sabablari bilan unplaced ro'yxatiga yoziladi.
         """
         from collections import defaultdict
 
         self.reset_state()
+        self.start_time = time.time()
+        self.is_timed_out = False
+
         class_reqs = defaultdict(list)
         for r in self.requirements:
             class_reqs[r.class_id].append(r)
 
-        class_ids = list(class_reqs.keys())
+        for class_id, reqs in class_reqs.items():
+            if self.is_timed_out:
+                for lesson in reqs:
+                    if lesson.id not in self.assignments:
+                        self.unplaced.append(self._build_unplaced_entry(lesson, "Algoritm vaqt limiti (timeout) tugadi"))
+                continue
 
-        for class_id in class_ids:
-            reqs = class_reqs[class_id]
             sub_counts = defaultdict(int)
             for r in reqs:
                 sub_counts[r.subject_id] += 1
 
-            # Maxsus xona talab qiluvchi va ko'p soatlik fanlarni (MRV) oldinga suramiz
             reqs.sort(
                 key=lambda r: (
                     0 if normalize_room_type(self.subjects[r.subject_id].required_room_type) != "GENERAL" else 1,
@@ -374,70 +418,70 @@ class TimetableGeneratorCSP:
                 )
             )
 
-            # Sinf uchun 1 soniya vaqt limiti bilan CSP backtracking
-            self.timeout_seconds = 1.0
-            self.start_time = time.time()
-            self.is_timed_out = False
-            self._backtrack_class(reqs, 0, max_per_day=2)
+            # Avval max_per_day=1 bilan urinib ko'ramiz; agar imkonsiz bo'lsa sinf holatini tozalab max_per_day=2 bilan urinamiz
+            assigned_before = set(self.assignments.keys())
+            success = self._backtrack_class(reqs, 0, max_per_day=1)
+            if not success and not self.is_timed_out:
+                for r in reqs:
+                    if r.id in self.assignments and r.id not in assigned_before:
+                        s = self.assignments[r.id]
+                        self.unassign(r, s.day, s.slot, s.room)
+                success = self._backtrack_class(reqs, 0, max_per_day=2)
 
-            # Agar sinfda joylashmagan darslar qolgan bo'lsa, sinfning bo'sh vaqtlariga optimal joylashtiramiz
+            # Qat'iy fallback: faqat is_hard_valid == True bo'lgan bo'sh slotlarga joylashtirish (to'qnashuv TAQIQLANADI)
             unassigned = [r for r in reqs if r.id not in self.assignments]
-            if unassigned:
-                target_class = self.classes[class_id]
-                shift = normalize_shift(target_class.shift)
-                for lesson in unassigned:
-                    sub = self.subjects[lesson.subject_id]
-                    req_type = normalize_room_type(sub.required_room_type)
-                    if lesson.preferred_room_id and lesson.preferred_room_id in self.rooms:
-                        rooms = [self.rooms[lesson.preferred_room_id]]
-                    elif req_type in ("COMPUTER_LAB", "GYM", "LABORATORY"):
-                        rooms = [r for r in self.rooms.values() if normalize_room_type(r.room_type) == req_type]
-                        if not rooms:
-                            rooms = list(self.rooms.values())
-                    else:
-                        rooms = list(self.rooms.values())
+            for lesson in unassigned:
+                if (time.time() - self.start_time) > self.timeout_seconds:
+                    self.is_timed_out = True
+                    self.unplaced.append(self._build_unplaced_entry(lesson, "Algoritm vaqt limiti (timeout) tugadi"))
+                    continue
 
-                    best_slot = None
-                    best_penalty = float("inf")
-                    best_room = None
+                rooms = self._get_candidate_rooms(lesson)
+                best_slot = None
+                best_penalty = float("inf")
+                best_room = None
+                effective_max_per_day = max(lesson.max_per_day, 2)
 
-                    # Kunlarni dars soni kam bo'yicha saralash (barcha kunlarga teng taqsimlash)
-                    c_day_len = lambda d: len(self.class_daily_slots.get((class_id, d), []))
-                    sorted_days = sorted(self.DAYS, key=c_day_len)
+                c_day_len = lambda d: len(self.class_daily_slots.get((class_id, d), []))
+                sorted_days = sorted(self.DAYS, key=c_day_len)
 
-                    for day in sorted_days:
-                        # Kunlik 6 soatdan oshmasin
-                        if c_day_len(day) >= self.slots_per_day:
-                            continue
-
-                        for slot in range(1, self.slots_per_day + 1):
-                            if (day, slot, class_id) in self.class_occupancy:
-                                continue  # Sinf shu soatda albatta bo'sh bo'lishi shart
-
-                            for room in rooms:
-                                p = 0
-                                # Kunlar balansi: kam darsli kunga kuchli ustunlik
-                                cur_cnt = c_day_len(day)
-                                p += cur_cnt * 30
-
-                                if (shift, day, slot, room.id) in self.room_occupancy:
-                                    p += 100
-                                if lesson.teacher_id and (shift, day, slot, lesson.teacher_id) in self.teacher_occupancy:
-                                    p += 200
-                                p += self.calculate_slot_penalty(lesson, day, slot, room)
-
+                for day in sorted_days:
+                    for slot in range(1, self.slots_per_day + 1):
+                        for room in rooms:
+                            if self.is_hard_valid(lesson, day, slot, room, max_per_day=effective_max_per_day):
+                                p = c_day_len(day) * 30 + self.calculate_slot_penalty(lesson, day, slot, room)
                                 if p < best_penalty:
                                     best_penalty = p
                                     best_slot = (day, slot)
                                     best_room = room
 
-                    if best_slot and best_room:
-                        day, slot = best_slot
-                        self.assign(lesson, day, slot, best_room)
+                if best_slot and best_room:
+                    self.assign(lesson, best_slot[0], best_slot[1], best_room)
+                else:
+                    self.unplaced.append(
+                        self._build_unplaced_entry(
+                            lesson,
+                            "O'qituvchi, xona yoki soat cheklovlari sababli ziddiyatsiz joy topilmadi"
+                        )
+                    )
 
-        if self.assignments:
-            return list(self.assignments.values())
-        return None
+        return list(self.assignments.values()), list(self.unplaced)
+
+    def solve(self) -> Optional[List[ScheduledSlot]]:
+        """
+        Faqat 100% darslar ziddiyatsiz joylashganda yechim qaytaradi; aks holda None.
+        Joylashmagan darslar self.unplaced da saqlanadi.
+        """
+        slots, unplaced = self._run_solver()
+        if unplaced or len(slots) != len(self.requirements) or self.is_timed_out:
+            return None
+        return slots
+
+    def solve_partial(self) -> Tuple[List[ScheduledSlot], List[Dict[str, Any]]]:
+        """
+        Ziddiyatsiz joylashgan darslar va joylashmagan darslar ro'yxatini qaytaradi.
+        """
+        return self._run_solver()
 
     def _backtrack_class(self, req_list: List[LessonRequirement], index: int, max_per_day: int = 1) -> bool:
         """

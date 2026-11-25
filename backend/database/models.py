@@ -84,6 +84,7 @@ class Teacher(Base):
     primary_subject = Column(String(500))
     max_weekly_hours = Column(Integer, default=24, nullable=False)
     max_daily_hours = Column(Integer, default=5, nullable=False)
+    unavailable_slots = Column(JSONB, default=list, nullable=False)
     created_at = Column(DateTime(timezone=True), default=utc_now)
     updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
 

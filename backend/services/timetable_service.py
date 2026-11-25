@@ -20,11 +20,24 @@ from database.models import (
 
 class TimetableService:
     @staticmethod
+    def _parse_unavailable_slots(raw_slots: Any) -> set:
+        parsed = set()
+        if not raw_slots or not isinstance(raw_slots, list):
+            return parsed
+        for item in raw_slots:
+            if isinstance(item, (list, tuple)) and len(item) == 2:
+                parsed.add((str(item[0]), int(item[1])))
+            elif isinstance(item, dict) and "day" in item and "slot" in item:
+                parsed.add((str(item["day"]), int(item["slot"])))
+        return parsed
+
+    @staticmethod
     async def generate_and_save_schedule(
         db: AsyncSession,
         school_id: str,
         term: int = 1,
-        slots_per_day: int = 6
+        slots_per_day: int = 6,
+        save_partial: bool = False
     ) -> Dict[str, Any]:
         """
         1. Maktabga tegishli tanlangan chorak (term) dagi barcha sinflarning
@@ -76,8 +89,9 @@ class TimetableService:
             CSPTeacher(
                 id=t.id,
                 name=t.full_name,
-                max_weekly_hours=9999,  # Haftalik soat cheklovi olib tashlangan
-                max_daily_hours=max(t.max_daily_hours or 6, slots_per_day)
+                max_weekly_hours=t.max_weekly_hours or 36,
+                max_daily_hours=t.max_daily_hours or 6,
+                unavailable_slots=TimetableService._parse_unavailable_slots(getattr(t, "unavailable_slots", None))
             )
             for t in db_teachers
         ]
@@ -151,12 +165,35 @@ class TimetableService:
             slots_per_day=slots_per_day
         )
 
-        solution = solver.solve()
+        if save_partial:
+            solution, unplaced = solver.solve_partial()
+        else:
+            solution = solver.solve()
+            unplaced = solver.unplaced
 
-        if not solution:
+        all_placed = solution is not None and len(solution) == len(csp_reqs) and not unplaced
+
+        if not all_placed and not save_partial:
             return {
                 "success": False,
-                "message": f"{term}-chorak o'quv rejasidagi soatlar bo'yicha ziddiyatsiz jadval tuzib bo'lmadi. Xonalar bandligi yoki smena to'siq bo'lmoqda."
+                "status": "failed",
+                "message": f"{term}-chorak o'quv rejasidagi barcha darslarni ({len(csp_reqs)} tadan {len(unplaced)} tasi joylashmadi) ziddiyatsiz joylashtirib bo'lmadi.",
+                "total_lessons_scheduled": 0,
+                "total_required": len(csp_reqs),
+                "unplaced": unplaced,
+                "term": term,
+            }
+
+        slots_to_save = solution or []
+        if not slots_to_save:
+            return {
+                "success": False,
+                "status": "failed",
+                "message": f"{term}-chorak uchun birorta ham dars joylashtirib bo'lmadi.",
+                "total_lessons_scheduled": 0,
+                "total_required": len(csp_reqs),
+                "unplaced": unplaced,
+                "term": term,
             }
 
         # E. Ushbu chorak uchun eski jadvalni tozalash va yangisini saqlash
@@ -178,15 +215,29 @@ class TimetableService:
                 teacher_id=slot.lesson.teacher_id,
                 room_id=slot.room.id,
             )
-            for slot in solution
+            for slot in slots_to_save
         ]
 
         db.add_all(new_entries)
         await db.commit()
 
+        if not all_placed:
+            return {
+                "success": False,
+                "status": "partial",
+                "message": f"{term}-chorak dars jadvali qisman tuzildi: {len(new_entries)}/{len(csp_reqs)} ta dars joylashtirildi, {len(unplaced)} ta dars joylashmadi.",
+                "total_lessons_scheduled": len(new_entries),
+                "total_required": len(csp_reqs),
+                "unplaced": unplaced,
+                "term": term,
+            }
+
         return {
             "success": True,
+            "status": "success",
             "message": f"{term}-chorak dars jadvali muvaffaqiyatli tuzildi! Jami {len(new_entries)} ta dars joylashtirildi.",
             "total_lessons_scheduled": len(new_entries),
+            "total_required": len(csp_reqs),
+            "unplaced": [],
             "term": term
         }
