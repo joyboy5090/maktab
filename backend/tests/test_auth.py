@@ -4,7 +4,7 @@ import jwt
 from httpx import AsyncClient
 from pydantic import ValidationError
 from schemas.schemas import LoginRequest, UserCreate
-from core.security import create_access_token, create_refresh_token, decode_token
+from core.security import create_access_token, create_refresh_token, decode_token, get_password_hash, verify_password
 from core.config import settings
 
 def test_password_policy_validation():
@@ -174,3 +174,86 @@ async def test_init_db_requires_admin_env_and_echo_false(monkeypatch):
          patch.object(init_db, "AsyncSessionLocal", return_value=mock_session_ctx):
         with pytest.raises(RuntimeError, match="DEFAULT_ADMIN_EMAIL"):
             await init_db.init()
+
+
+def test_password_72_and_80_bytes_validation_and_hash():
+    pw_72 = "A1" + "a" * 70
+    assert len(pw_72.encode("utf-8")) == 72
+
+    user_req = UserCreate(
+        email="user72@maktab.uz",
+        password=pw_72,
+        first_name="Test",
+        last_name="User",
+    )
+    login_req = LoginRequest(email="user72@maktab.uz", password=pw_72)
+    assert user_req.password == pw_72
+    assert login_req.password == pw_72
+
+    hashed_72 = get_password_hash(pw_72)
+    assert verify_password(pw_72, hashed_72) is True
+
+    # 80 baytli ASCII parol schemas.py da rad etiladi
+    pw_80 = "A1" + "a" * 78
+    assert len(pw_80.encode("utf-8")) == 80
+    with pytest.raises(ValidationError):
+        UserCreate(
+            email="user80@maktab.uz",
+            password=pw_80,
+            first_name="Test",
+            last_name="User",
+        )
+    with pytest.raises(ValidationError):
+        LoginRequest(email="user80@maktab.uz", password=pw_80)
+
+    # Ko'p baytli UTF-8 parol (belgi soni <= 72, lekin bayt > 72) ham rad etiladi
+    pw_utf8_over = "A1" + "Б" * 36  # 2 + 72 = 74 bayt
+    assert len(pw_utf8_over) == 38
+    assert len(pw_utf8_over.encode("utf-8")) == 74
+    with pytest.raises(ValidationError):
+        UserCreate(
+            email="utf8@maktab.uz",
+            password=pw_utf8_over,
+            first_name="Test",
+            last_name="User",
+        )
+
+    # security.py darajasida 80 baytli parol 72 baytga kesilib mos keladi
+    hashed_80 = get_password_hash(pw_80)
+    assert verify_password(pw_80, hashed_80) is True
+
+
+@pytest.mark.asyncio
+async def test_login_with_72_and_80_byte_passwords(async_client: AsyncClient):
+    from main import app
+    from database.connection import get_db_session
+
+    pw_72 = "A1" + "x" * 70
+    pw_80 = "A1" + "x" * 78
+
+    mock_user = MagicMock()
+    mock_user.id = "u-72"
+    mock_user.email = "u72@maktab.uz"
+    mock_user.role = "TEACHER"
+    mock_user.school_id = "94561d8a-2ca8-4bb2-9b94-e67a53fc472c"
+    mock_user.is_active = True
+    mock_user.password_hash = get_password_hash(pw_72)
+
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = mock_user
+    mock_db = AsyncMock()
+    mock_db.execute = AsyncMock(return_value=mock_result)
+
+    async def override_db():
+        yield mock_db
+
+    app.dependency_overrides[get_db_session] = override_db
+    try:
+        res_72 = await async_client.post("/auth/login", json={
+            "email": "u72@maktab.uz",
+            "password": pw_72,
+        })
+        assert res_72.status_code == 200
+        assert "access_token" in res_72.json()
+    finally:
+        app.dependency_overrides.pop(get_db_session, None)

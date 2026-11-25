@@ -5,6 +5,8 @@ from pydantic import BaseModel, EmailStr, field_validator
 def validate_password_strength(v: str) -> str:
     if len(v) < 8:
         raise ValueError("Parol kamida 8 ta belgidan iborat bo'lishi kerak")
+    if len(v.encode("utf-8")) > 72:
+        raise ValueError("Parol UTF-8 da ko'pi bilan 72 bayt bo'lishi kerak")
     if not re.search(r"[A-Z]", v):
         raise ValueError("Parolda kamida 1 ta katta harf bo'lishi kerak")
     if not re.search(r"\d", v):
