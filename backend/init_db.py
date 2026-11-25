@@ -22,7 +22,7 @@ from database.models import (
     School, User, Teacher, Room, SchoolClass, Subject, ClassSubjectAllocation
 )
 
-engine = create_async_engine(async_url, echo=True)
+engine = create_async_engine(async_url, echo=False)
 AsyncSessionLocal = async_sessionmaker(bind=engine, expire_on_commit=False)
 
 async def init():
@@ -58,14 +58,18 @@ async def init():
 
         # 2.1 Haqiqiy admin foydalanuvchini yaratish (hashed password bilan)
         from core.security import get_password_hash
-        admin_email = "admin@maktab142.uz"
+        admin_email = os.getenv("DEFAULT_ADMIN_EMAIL", "").strip()
+        admin_password = os.getenv("DEFAULT_ADMIN_PASSWORD", "")
+        if not admin_email or not admin_password:
+            raise RuntimeError("XATO: DEFAULT_ADMIN_EMAIL va DEFAULT_ADMIN_PASSWORD env o'zgaruvchilari belgilanmagan!")
+
         u_res = await session.execute(select(User).where(User.email == admin_email))
         admin_user = u_res.scalar_one_or_none()
         if not admin_user:
             print("2.1 Admin foydalanuvchi yaratilmoqda...")
             admin_user = User(
                 email=admin_email,
-                password_hash=get_password_hash("Admin123!"),
+                password_hash=get_password_hash(admin_password),
                 first_name="Rustam",
                 last_name="Karimov",
                 role="SCHOOL_ADMIN",
@@ -74,12 +78,9 @@ async def init():
             )
             session.add(admin_user)
             await session.commit()
-            print(f"   ✓ Admin foydalanuvchi yaratildi: {admin_email} (Parol: Admin123!)")
+            print(f"   ✓ Admin foydalanuvchi yaratildi: {admin_email}")
         else:
-            admin_user.password_hash = get_password_hash("Admin123!")
-            admin_user.is_active = True
-            await session.commit()
-            print(f"   ✓ Admin foydalanuvchi paroli yangilandi: {admin_email} (Parol: Admin123!)")
+            print(f"   ✓ Admin foydalanuvchi allaqachon mavjud: {admin_email}")
 
         # 3. Fanlar
         sub_res = await session.execute(select(Subject).where(Subject.school_id == school_id).limit(1))

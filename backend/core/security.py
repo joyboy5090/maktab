@@ -36,6 +36,7 @@ def create_access_token(
         "email": email or (str(subject) if "@" in str(subject) else ""),
         "school_id": str(school_id) if school_id else None,
         "role": role,
+        "type": "access",
         "exp": expire
     }
     encoded_jwt = jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)

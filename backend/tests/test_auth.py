@@ -1,8 +1,11 @@
 import pytest
+from unittest.mock import patch, AsyncMock, MagicMock
+from jose import jwt
 from httpx import AsyncClient
 from pydantic import ValidationError
 from schemas.schemas import LoginRequest, UserCreate
-from core.security import create_refresh_token, decode_token
+from core.security import create_access_token, create_refresh_token, decode_token
+from core.config import settings
 
 def test_password_policy_validation():
     # Valid password
@@ -59,3 +62,115 @@ async def test_invalid_login(async_client: AsyncClient):
         "password": "WrongPassword99!"
     })
     assert res.status_code == 401
+
+
+def test_access_token_has_type_access():
+    token = create_access_token(
+        subject="user-1",
+        school_id="94561d8a-2ca8-4bb2-9b94-e67a53fc472c",
+        role="SCHOOL_ADMIN",
+        email="admin@maktab142.uz"
+    )
+    payload = decode_token(token)
+    assert payload.get("type") == "access"
+
+
+@pytest.mark.asyncio
+async def test_refresh_token_rejected_on_me(async_client: AsyncClient):
+    refresh_token = create_refresh_token(
+        subject="user-1",
+        school_id="94561d8a-2ca8-4bb2-9b94-e67a53fc472c",
+        role="SCHOOL_ADMIN",
+        email="admin@maktab142.uz"
+    )
+    res = await async_client.get(
+        "/auth/me",
+        headers={"Authorization": f"Bearer {refresh_token}"}
+    )
+    assert res.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_token_without_type_rejected_on_me(async_client: AsyncClient):
+    legacy_token = jwt.encode(
+        {
+            "sub": "user-1",
+            "email": "admin@maktab142.uz",
+            "school_id": "94561d8a-2ca8-4bb2-9b94-e67a53fc472c",
+            "role": "SCHOOL_ADMIN",
+        },
+        settings.SECRET_KEY,
+        algorithm=settings.ALGORITHM,
+    )
+    res = await async_client.get(
+        "/auth/me",
+        headers={"Authorization": f"Bearer {legacy_token}"}
+    )
+    assert res.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_teacher_put_school_forbidden_and_get_allowed(async_client: AsyncClient):
+    teacher_token = create_access_token(
+        subject="teacher-1",
+        school_id="94561d8a-2ca8-4bb2-9b94-e67a53fc472c",
+        role="TEACHER",
+        email="teacher@maktab142.uz"
+    )
+    headers = {"Authorization": f"Bearer {teacher_token}"}
+
+    put_res = await async_client.put(
+        "/auth/school",
+        headers=headers,
+        json={"name": "Yangi Nomi"}
+    )
+    assert put_res.status_code == 403
+
+    get_res = await async_client.get("/auth/school", headers=headers)
+    assert get_res.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_login_unknown_user_still_verifies_password(async_client: AsyncClient):
+    with patch("routers.auth.verify_password", return_value=False) as mock_verify:
+        res = await async_client.post("/auth/login", json={
+            "email": "nonexistent_timing_test@maktab142.uz",
+            "password": "SomePassword123!"
+        })
+        assert res.status_code == 401
+        assert mock_verify.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_init_db_requires_admin_env_and_echo_false(monkeypatch):
+    import init_db
+
+    assert init_db.engine.echo is False
+
+    monkeypatch.delenv("DEFAULT_ADMIN_EMAIL", raising=False)
+    monkeypatch.delenv("DEFAULT_ADMIN_PASSWORD", raising=False)
+
+    mock_conn = AsyncMock()
+    mock_begin = MagicMock()
+    mock_begin.__aenter__ = AsyncMock(return_value=mock_conn)
+    mock_begin.__aexit__ = AsyncMock(return_value=False)
+
+    mock_school = MagicMock()
+    mock_school.id = "school-1"
+    mock_school.name = "Test School"
+    mock_res = MagicMock()
+    mock_res.scalar_one_or_none.return_value = mock_school
+
+    mock_session = AsyncMock()
+    mock_session.execute = AsyncMock(return_value=mock_res)
+    mock_session_ctx = MagicMock()
+    mock_session_ctx.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_session_ctx.__aexit__ = AsyncMock(return_value=False)
+
+    mock_engine = MagicMock()
+    mock_engine.begin.return_value = mock_begin
+
+    with patch.object(init_db, "engine", mock_engine), \
+         patch.object(init_db, "AsyncSessionLocal", return_value=mock_session_ctx):
+        with pytest.raises(RuntimeError, match="DEFAULT_ADMIN_EMAIL"):
+            await init_db.init()

@@ -177,4 +177,4 @@ npm install
 npm run dev
 ```
 Brauzerda oching: `http://localhost:3000`  
-Standart admin: `admin@maktab142.uz` / Parol: `Admin123!`
+Boshlang'ich admin foydalanuvchini yaratish uchun `backend/.env` faylida `DEFAULT_ADMIN_EMAIL` va `DEFAULT_ADMIN_PASSWORD` o'zgaruvchilarini sozlab, `python init_db.py` buyrug'ini ishga tushiring.

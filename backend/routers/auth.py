@@ -2,13 +2,16 @@ from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from core.security import verify_password, create_access_token, create_refresh_token, decode_token, get_password_hash
-from core.rbac import CurrentUser, get_current_user
+from core.rbac import CurrentUser, get_current_user, require_school_admin
 from core.limiter import limiter
 from database.connection import get_db_session
 from database.models import User, School
 from schemas.schemas import LoginRequest, TokenResponse, RefreshTokenRequest, SchoolResponse, SchoolUpdate
 
 router = APIRouter(prefix="/auth", tags=["Autentifikatsiya & RBAC"])
+
+# Timing attack himoyasi uchun soxta bcrypt xesh
+_DUMMY_PASSWORD_HASH = get_password_hash("dummy-timing-protection-password")
 
 @router.post("/login", response_model=TokenResponse)
 @limiter.limit("5/minute")
@@ -26,7 +29,10 @@ async def login(
     result = await db.execute(query)
     user = result.scalar_one_or_none()
 
-    if not user or not user.is_active or not verify_password(req.password, user.password_hash):
+    password_hash_to_check = user.password_hash if user else _DUMMY_PASSWORD_HASH
+    password_valid = verify_password(req.password, password_hash_to_check)
+
+    if not user or not user.is_active or not password_valid:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Email yoki parol noto'g'ri"
@@ -139,7 +145,7 @@ async def get_my_school(
 async def update_my_school(
     data: SchoolUpdate,
     db: AsyncSession = Depends(get_db_session),
-    current_user: CurrentUser = Depends(get_current_user)
+    current_user: CurrentUser = Depends(require_school_admin)
 ):
     if not current_user.school_id:
         raise HTTPException(status_code=400, detail="Maktab biriktirilmagan")
