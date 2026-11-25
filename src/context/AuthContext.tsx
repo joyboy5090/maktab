@@ -4,7 +4,6 @@ import React, { createContext, useContext, useState, useEffect, useCallback } fr
 import {
   getToken,
   setToken,
-  setRefreshToken,
   removeToken,
   authApi,
 } from '@/lib/api';
@@ -47,11 +46,23 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   useEffect(() => {
     const initializeAuth = async () => {
-      const token = getToken();
-      if (token) {
-        await fetchProfile();
+      try {
+        let token = getToken();
+        if (!token) {
+          // Sahifa yangilanganda HttpOnly cookie orqali access tokenni tiklaymiz
+          const refreshRes = await authApi.refresh();
+          token = refreshRes.access_token;
+          setToken(token);
+        }
+        if (token) {
+          await fetchProfile();
+        }
+      } catch {
+        removeToken();
+        setUser(null);
+      } finally {
+        setIsLoading(false);
       }
-      setIsLoading(false);
     };
 
     initializeAuth();
@@ -61,9 +72,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     try {
       const res = await authApi.login({ email, password });
       setToken(res.access_token);
-      if (res.refresh_token) {
-        setRefreshToken(res.refresh_token);
-      }
       setUser({
         id: res.user_id || 'admin-id',
         email: res.email,
@@ -81,7 +89,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  const logout = () => {
+  const logout = async () => {
+    await authApi.logout().catch(() => {});
     removeToken();
     setUser(null);
     if (typeof window !== 'undefined') {

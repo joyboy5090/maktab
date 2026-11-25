@@ -6,6 +6,12 @@ from pydantic import ValidationError
 from schemas.schemas import LoginRequest, UserCreate
 from core.security import create_access_token, create_refresh_token, decode_token, get_password_hash, verify_password
 from core.config import settings
+from core.limiter import limiter
+
+
+@pytest.fixture(autouse=True)
+def _reset_rate_limiter():
+    limiter.reset()
 
 def test_password_policy_validation():
     # Valid password
@@ -34,18 +40,20 @@ async def test_login_and_refresh_flow(async_client: AsyncClient):
     assert login_res.status_code == 200
     data = login_res.json()
     assert "access_token" in data
-    assert "refresh_token" in data
+    assert "refresh_token" not in data
     assert data["role"] == "SCHOOL_ADMIN"
+    assert "refresh_token" in login_res.cookies
+    set_cookie_hdr = login_res.headers.get("set-cookie", "").lower()
+    assert "httponly" in set_cookie_hdr
+    assert "samesite=lax" in set_cookie_hdr
 
-    refresh_token = data["refresh_token"]
-
-    # Test refresh token
-    refresh_res = await async_client.post("/auth/refresh", json={
-        "refresh_token": refresh_token
-    })
+    # Test refresh token via HttpOnly cookie
+    refresh_res = await async_client.post("/auth/refresh")
     assert refresh_res.status_code == 200
     refresh_data = refresh_res.json()
     assert "access_token" in refresh_data
+    assert "refresh_token" not in refresh_data
+    assert "refresh_token" in refresh_res.cookies
 
     # Test /auth/me with new token
     me_res = await async_client.get(
@@ -54,6 +62,80 @@ async def test_login_and_refresh_flow(async_client: AsyncClient):
     )
     assert me_res.status_code == 200
     assert me_res.json()["email"] == "admin@maktab142.uz"
+
+
+def test_access_token_expiry_within_15_to_30_minutes():
+    assert 15 <= settings.ACCESS_TOKEN_EXPIRE_MINUTES <= 30
+
+
+@pytest.mark.asyncio
+async def test_refresh_rotation_and_reuse_detection(async_client: AsyncClient):
+    # 1. Login to get initial refresh cookie (token_1)
+    async_client.cookies.clear()
+    login_res = await async_client.post("/auth/login", json={
+        "email": "admin@maktab142.uz",
+        "password": "Admin123!"
+    })
+    assert login_res.status_code == 200
+    token_1 = login_res.cookies.get("refresh_token")
+    assert token_1
+
+    # 2. Rotate: refresh with token_1 -> gets token_2
+    async_client.cookies.set("refresh_token", token_1)
+    rot_res = await async_client.post("/auth/refresh")
+    assert rot_res.status_code == 200
+    token_2 = rot_res.cookies.get("refresh_token")
+    assert token_2
+    assert token_2 != token_1
+
+    # 3. Reuse detection: replay revoked token_1 -> 401 and revokes token_2 too
+    async_client.cookies.set("refresh_token", token_1)
+    reuse_res = await async_client.post("/auth/refresh")
+    assert reuse_res.status_code == 401
+
+    # 4. token_2 must now also be revoked!
+    async_client.cookies.set("refresh_token", token_2)
+    after_reuse_res = await async_client.post("/auth/refresh")
+    assert after_reuse_res.status_code == 401
+    async_client.cookies.clear()
+
+
+@pytest.mark.asyncio
+async def test_logout_revokes_token_and_clears_cookie(async_client: AsyncClient):
+    async_client.cookies.clear()
+    login_res = await async_client.post("/auth/login", json={
+        "email": "admin@maktab142.uz",
+        "password": "Admin123!"
+    })
+    assert login_res.status_code == 200
+    token_1 = login_res.cookies.get("refresh_token")
+    assert token_1
+
+    logout_res = await async_client.post("/auth/logout")
+    assert logout_res.status_code == 200
+    assert logout_res.json()["success"] is True
+
+    # Old token must no longer work after logout
+    async_client.cookies.set("refresh_token", token_1)
+    refresh_after_logout = await async_client.post("/auth/refresh")
+    assert refresh_after_logout.status_code == 401
+    async_client.cookies.clear()
+
+
+@pytest.mark.asyncio
+async def test_expired_refresh_token_rejected(async_client: AsyncClient):
+    from datetime import timedelta
+    expired_token = create_refresh_token(
+        subject="expired-user",
+        school_id="94561d8a-2ca8-4bb2-9b94-e67a53fc472c",
+        role="SCHOOL_ADMIN",
+        email="admin@maktab142.uz",
+        expires_delta=timedelta(seconds=-10),
+    )
+    async_client.cookies.set("refresh_token", expired_token)
+    res = await async_client.post("/auth/refresh")
+    assert res.status_code == 401
+    async_client.cookies.clear()
 
 @pytest.mark.asyncio
 async def test_invalid_login(async_client: AsyncClient):

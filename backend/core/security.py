@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
 from typing import Any, Union, Optional
+import uuid
 import jwt
 import bcrypt
 from core.config import settings
@@ -47,9 +48,10 @@ def create_refresh_token(
     school_id: Optional[str] = None,
     role: str = "TEACHER",
     email: Optional[str] = None,
+    jti: Optional[str] = None,
     expires_delta: Optional[timedelta] = None
 ) -> str:
-    """7 kunlik refresh token yaratadi"""
+    """7 kunlik refresh token yaratadi (jti bilan)"""
     if expires_delta:
         expire = datetime.now(timezone.utc) + expires_delta
     else:
@@ -60,6 +62,7 @@ def create_refresh_token(
         "email": email or (str(subject) if "@" in str(subject) else ""),
         "school_id": str(school_id) if school_id else None,
         "role": role,
+        "jti": jti or str(uuid.uuid4()),
         "type": "refresh",
         "exp": expire
     }

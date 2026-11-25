@@ -16,14 +16,13 @@ def validate_password_strength(v: str) -> str:
 # Auth Schemas
 class TokenResponse(BaseModel):
     access_token: str
-    refresh_token: Optional[str] = None
     token_type: str = "bearer"
     role: str
     school_id: Optional[str] = None
     email: str
 
 class RefreshTokenRequest(BaseModel):
-    refresh_token: str
+    refresh_token: Optional[str] = None
 
 class LoginRequest(BaseModel):
     email: EmailStr

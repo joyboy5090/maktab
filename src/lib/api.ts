@@ -28,38 +28,19 @@ import {
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api/v1";
 
+// Access token faqat xotirada (modul o'zgaruvchisi) saqlanadi; refresh token HttpOnly cookie da
+let inMemoryAccessToken: string | null = null;
+
 export const getToken = (): string | null => {
-  if (typeof window !== "undefined") {
-    return localStorage.getItem("maktab_access_token");
-  }
-  return null;
+  return inMemoryAccessToken;
 };
 
 export const setToken = (token: string): void => {
-  if (typeof window !== "undefined") {
-    localStorage.setItem("maktab_access_token", token);
-  }
-};
-
-export const getRefreshToken = (): string | null => {
-  if (typeof window !== "undefined") {
-    return localStorage.getItem("maktab_refresh_token");
-  }
-  return null;
-};
-
-export const setRefreshToken = (token: string): void => {
-  if (typeof window !== "undefined") {
-    localStorage.setItem("maktab_refresh_token", token);
-  }
+  inMemoryAccessToken = token;
 };
 
 export const removeToken = (): void => {
-  if (typeof window !== "undefined") {
-    localStorage.removeItem("maktab_access_token");
-    localStorage.removeItem("maktab_refresh_token");
-    localStorage.removeItem("maktab_user_info");
-  }
+  inMemoryAccessToken = null;
 };
 
 let isRefreshing = false;
@@ -92,69 +73,60 @@ async function executeRequest<T>(endpoint: string, options: RequestInit = {}): P
 
   const res = await fetch(`${API_BASE_URL}${endpoint}`, {
     ...options,
+    credentials: "include",
     headers,
   });
 
   if (res.status === 401 && !endpoint.includes("/auth/login") && !endpoint.includes("/auth/refresh")) {
-    const refreshToken = getRefreshToken();
-    if (refreshToken) {
-      if (!isRefreshing) {
-        isRefreshing = true;
-        try {
-          const refreshRes = await fetch(`${API_BASE_URL}/auth/refresh`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ refresh_token: refreshToken }),
-          });
-
-          if (!refreshRes.ok) {
-            throw new Error("Sessiya muddati tugadi");
-          }
-
-          const refreshData: RefreshTokenResponse = await refreshRes.json();
-          setToken(refreshData.access_token);
-          if (refreshData.refresh_token) {
-            setRefreshToken(refreshData.refresh_token);
-          }
-          isRefreshing = false;
-          processQueue(null);
-
-          // Retry current request with new token
-          headers["Authorization"] = `Bearer ${refreshData.access_token}`;
-          const retryRes = await fetch(`${API_BASE_URL}${endpoint}`, {
-            ...options,
-            headers,
-          });
-          if (!retryRes.ok) {
-            const errData = await retryRes.json().catch(() => ({}));
-            throw new Error(errData?.error?.message || errData.detail || `Server xatosi: ${retryRes.status}`);
-          }
-          return await retryRes.json();
-        } catch (refreshErr) {
-          isRefreshing = false;
-          processQueue(refreshErr);
-          removeToken();
-          if (typeof window !== "undefined" && window.location.pathname !== "/login") {
-            window.location.href = "/login";
-          }
-          throw refreshErr;
-        }
-      } else {
-        // Wait until refreshing finishes then retry
-        return new Promise<T>((resolve, reject) => {
-          failedQueue.push({
-            resolve: () => {
-              executeRequest<T>(endpoint, options).then(resolve).catch(reject);
-            },
-            reject: (err) => reject(err),
-          });
+    if (!isRefreshing) {
+      isRefreshing = true;
+      try {
+        const refreshRes = await fetch(`${API_BASE_URL}/auth/refresh`, {
+          method: "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
         });
+
+        if (!refreshRes.ok) {
+          throw new Error("Sessiya muddati tugadi");
+        }
+
+        const refreshData: RefreshTokenResponse = await refreshRes.json();
+        setToken(refreshData.access_token);
+        isRefreshing = false;
+        processQueue(null);
+
+        // Retry current request with new token
+        headers["Authorization"] = `Bearer ${refreshData.access_token}`;
+        const retryRes = await fetch(`${API_BASE_URL}${endpoint}`, {
+          ...options,
+          credentials: "include",
+          headers,
+        });
+        if (!retryRes.ok) {
+          const errData = await retryRes.json().catch(() => ({}));
+          throw new Error(errData?.error?.message || errData.detail || `Server xatosi: ${retryRes.status}`);
+        }
+        return await retryRes.json();
+      } catch (refreshErr) {
+        isRefreshing = false;
+        processQueue(refreshErr);
+        removeToken();
+        if (typeof window !== "undefined" && window.location.pathname !== "/login") {
+          window.location.href = "/login";
+        }
+        throw refreshErr;
       }
     } else {
-      removeToken();
-      if (typeof window !== "undefined" && window.location.pathname !== "/login") {
-        window.location.href = "/login";
-      }
+      // Wait until refreshing finishes then retry
+      return new Promise<T>((resolve, reject) => {
+        failedQueue.push({
+          resolve: () => {
+            executeRequest<T>(endpoint, options).then(resolve).catch(reject);
+          },
+          reject: (err) => reject(err),
+        });
+      });
     }
   }
 
@@ -187,10 +159,13 @@ export const authApi = {
       method: "POST",
       body: JSON.stringify(credentials),
     }),
-  refresh: (refreshToken: string) =>
+  refresh: () =>
     executeRequest<RefreshTokenResponse>("/auth/refresh", {
       method: "POST",
-      body: JSON.stringify({ refresh_token: refreshToken }),
+    }),
+  logout: () =>
+    executeRequest<{ success: boolean; message: string }>("/auth/logout", {
+      method: "POST",
     }),
   getMe: () => executeRequest<UserProfile>("/auth/me"),
 };

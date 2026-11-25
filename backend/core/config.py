@@ -55,8 +55,9 @@ class Settings(BaseSettings):
     # JWT Security
     SECRET_KEY: str = ""
     ALGORITHM: str = "HS256"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24  # 1 kun
-    REFRESH_TOKEN_EXPIRE_DAYS: int = 7          # 7 kun
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 15   # 15 daqiqa
+    REFRESH_TOKEN_EXPIRE_DAYS: int = 7      # 7 kun
+    ENVIRONMENT: str = "development"
 
     @field_validator("SECRET_KEY", mode="before")
     @classmethod

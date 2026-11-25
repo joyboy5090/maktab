@@ -267,3 +267,19 @@ class AuditLog(Base):
     __table_args__ = (
         Index("idx_audit_logs_school", "school_id"),
     )
+
+
+class RefreshToken(Base):
+    """Refresh tokenlar, rotatsiya va reuse detection jadvali"""
+    __tablename__ = "refresh_tokens"
+
+    id = Column(UUID(as_uuid=False), primary_key=True, default=generate_uuid)
+    user_id = Column(UUID(as_uuid=False), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    revoked_at = Column(DateTime(timezone=True), nullable=True)
+    replaced_by = Column(UUID(as_uuid=False), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=utc_now)
+
+    __table_args__ = (
+        Index("idx_refresh_tokens_user", "user_id"),
+    )
