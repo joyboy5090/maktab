@@ -238,6 +238,7 @@ class TimetableEntry(Base):
     subject_id = Column(UUID(as_uuid=False), ForeignKey("subjects.id", ondelete="CASCADE"), nullable=False)
     teacher_id = Column(UUID(as_uuid=False), ForeignKey("teachers.id", ondelete="SET NULL"), nullable=True)
     room_id = Column(UUID(as_uuid=False), ForeignKey("rooms.id", ondelete="CASCADE"), nullable=False)
+    is_pinned = Column(Boolean, default=False, nullable=False)
     created_at = Column(DateTime(timezone=True), default=utc_now)
     updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
 

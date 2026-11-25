@@ -190,6 +190,7 @@ export interface TimetableCell {
   className: string;
   startTime: string;
   endTime: string;
+  isPinned?: boolean;
 }
 
 export type TimetableEntry = TimetableCell;

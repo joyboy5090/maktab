@@ -7,6 +7,7 @@ from services.generator import (
     Room,
     Subject,
     LessonRequirement,
+    ScheduledSlot,
     normalize_shift,
     normalize_room_type,
 )
@@ -227,3 +228,45 @@ def test_cpsat_medium_22_classes_benchmark_and_comparison():
         f"Legacy: {len(legacy_slots)}/{len(requirements)} (unplaced={len(legacy_unplaced)}) in {legacy_time:.2f}s (gaps={legacy_gaps})"
     )
     assert cpsat_gaps <= legacy_gaps or len(cpsat_solution) >= len(legacy_slots)
+
+
+def test_cpsat_respects_pinned_slots_without_conflicts():
+    classes = [SchoolClass(id="c1", name="5-A", student_count=25, shift="MORNING")]
+    teachers = [Teacher(id="t1", name="Matematik", max_daily_hours=2, max_weekly_hours=5)]
+    rooms = [Room(id="r1", number="5-A xona", capacity=30, room_type="GENERAL")]
+    subjects = [Subject(id="s_mat", name="Matematika", short_code="MAT", required_room_type="GENERAL")]
+
+    pinned = [
+        ScheduledSlot(
+            day="Dushanba",
+            slot=1,
+            lesson=LessonRequirement(id="pinned_1", class_id="c1", subject_id="s_mat", teacher_id="t1", preferred_room_id="r1"),
+            room=rooms[0],
+        )
+    ]
+
+    # 4 remaining hours (1 already pinned -> total 5 weekly, max_daily_hours=2)
+    requirements = [
+        LessonRequirement(id=f"req_{i}", class_id="c1", subject_id="s_mat", teacher_id="t1", preferred_room_id="r1", max_per_day=2)
+        for i in range(4)
+    ]
+
+    solver = TimetableGeneratorCPSAT(
+        classes=classes,
+        teachers=teachers,
+        rooms=rooms,
+        subjects=subjects,
+        requirements=requirements,
+        slots_per_day=6,
+        max_time_in_seconds=5.0,
+        pinned_slots=pinned,
+    )
+    solution = solver.solve()
+    assert solution is not None
+    assert len(solution) == 4
+
+    # Pinned slot (Dushanba, 1) must NOT be reused
+    assert all(not (s.day == "Dushanba" and s.slot == 1) for s in solution)
+    # Dushanba can have at most 1 more lesson (since 1 is already pinned and max_daily_hours=2)
+    dushanba_new = [s for s in solution if s.day == "Dushanba"]
+    assert len(dushanba_new) <= 1

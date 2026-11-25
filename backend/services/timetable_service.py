@@ -35,6 +35,7 @@ def _run_solver_in_process(
     slots_per_day: int,
     save_partial: bool,
     solver_type: str,
+    pinned_slots: Optional[List[ScheduledSlot]] = None,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], bool]:
     """Alohida OS jarayonida (ProcessPoolExecutor) ishlaydigan sof CPU yechuvchi."""
     if solver_type == "legacy":
@@ -46,6 +47,9 @@ def _run_solver_in_process(
             requirements=csp_reqs,
             slots_per_day=slots_per_day,
         )
+        if pinned_slots:
+            for ps in pinned_slots:
+                solver.assign(ps.lesson, ps.day, ps.slot, ps.room)
     else:
         solver = TimetableGeneratorCPSAT(
             classes=csp_classes,
@@ -54,6 +58,7 @@ def _run_solver_in_process(
             subjects=csp_subjects,
             requirements=csp_reqs,
             slots_per_day=slots_per_day,
+            pinned_slots=pinned_slots,
         )
 
     if save_partial:
@@ -402,6 +407,38 @@ class TimetableService:
                             class_home_rooms[c.id] = r.id
                             break
 
+                # Qotirilgan (pinned) darslarni yuklaymiz — ular o'zgartirilmaydi
+                pinned_res = await db.execute(
+                    select(TimetableEntry).where(
+                        TimetableEntry.school_id == school_id,
+                        TimetableEntry.term == term,
+                        TimetableEntry.is_pinned == True,
+                    )
+                )
+                db_pinned = pinned_res.scalars().all()
+                rooms_by_id = {r.id: r for r in csp_rooms}
+                pinned_slots: List[ScheduledSlot] = []
+                pinned_counts: Dict[Tuple[str, str], int] = {}
+                for pe in db_pinned:
+                    rm = rooms_by_id.get(pe.room_id)
+                    if not rm:
+                        continue
+                    pinned_counts[(pe.class_id, pe.subject_id)] = pinned_counts.get((pe.class_id, pe.subject_id), 0) + 1
+                    pinned_slots.append(
+                        ScheduledSlot(
+                            day=pe.day,
+                            slot=pe.lesson_order,
+                            lesson=CSPLessonReq(
+                                id=f"pinned_{pe.id}",
+                                class_id=pe.class_id,
+                                subject_id=pe.subject_id,
+                                teacher_id=pe.teacher_id or "",
+                                preferred_room_id=pe.room_id,
+                            ),
+                            room=rm,
+                        )
+                    )
+
                 csp_reqs: List[CSPLessonReq] = []
                 for alloc in db_allocations:
                     subj = next((s for s in db_subjects if s.id == alloc.subject_id), None)
@@ -413,7 +450,9 @@ class TimetableService:
                     hours_to_schedule = int(round(alloc.weekly_hours)) if alloc.weekly_hours else 0
                     if alloc.weekly_hours and alloc.weekly_hours > 0 and hours_to_schedule == 0:
                         hours_to_schedule = 1
-                    for i in range(hours_to_schedule):
+                    already_pinned = pinned_counts.get((alloc.class_id, alloc.subject_id), 0)
+                    remaining_hours = max(0, hours_to_schedule - already_pinned)
+                    for i in range(remaining_hours):
                         csp_reqs.append(
                             CSPLessonReq(
                                 id=f"{alloc.id}_{i}",
@@ -440,6 +479,7 @@ class TimetableService:
                     slots_per_day,
                     save_partial,
                     solver_type,
+                    pinned_slots,
                 )
 
                 job.progress = 85
@@ -461,11 +501,13 @@ class TimetableService:
                     await db.commit()
                     return
 
-                if slots_payload:
+                if slots_payload or pinned_slots:
+                    # Faqat qotirilmagan (is_pinned == False) darslarni o'chiramiz
                     await db.execute(
                         delete(TimetableEntry).where(
                             TimetableEntry.school_id == school_id,
                             TimetableEntry.term == term,
+                            TimetableEntry.is_pinned == False,
                         )
                     )
                     db.add_all(

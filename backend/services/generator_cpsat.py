@@ -32,6 +32,7 @@ class TimetableGeneratorCPSAT:
         slots_per_day: int = 6,
         max_time_in_seconds: float = 30.0,
         timeout_seconds: Optional[float] = None,
+        pinned_slots: Optional[List[ScheduledSlot]] = None,
     ):
         self.classes = {c.id: c for c in classes}
         self.teachers = {t.id: t for t in teachers}
@@ -40,6 +41,7 @@ class TimetableGeneratorCPSAT:
         self.requirements = requirements
         self.slots_per_day = slots_per_day
         self.max_time_in_seconds = timeout_seconds if timeout_seconds is not None else max_time_in_seconds
+        self.pinned_slots = pinned_slots or []
         self.unplaced: List[Dict[str, Any]] = []
         self.diagnostics: List[str] = []
 
@@ -185,6 +187,29 @@ class TimetableGeneratorCPSAT:
         class_total_reqs: Dict[str, int] = defaultdict(int)
         impossible_lessons: Set[int] = set()
 
+        # Qotirilgan (pinned) darslar bandligini oldindan hisobga olamiz
+        pinned_class_day_slot: Set[Tuple[str, int, int]] = set()
+        pinned_teacher_shift_day_slot: Set[Tuple[str, str, int, int]] = set()
+        pinned_room_shift_day_slot: Set[Tuple[str, str, int, int]] = set()
+        pinned_teacher_day_count: Dict[Tuple[str, int], int] = defaultdict(int)
+        pinned_teacher_weekly_count: Dict[str, int] = defaultdict(int)
+        pinned_class_sub_day_count: Dict[Tuple[str, str, int], int] = defaultdict(int)
+
+        day_to_idx = {d: i for i, d in enumerate(self.DAYS)}
+        for ps in self.pinned_slots:
+            d_idx = day_to_idx.get(ps.day)
+            if d_idx is None:
+                continue
+            cls_obj = self.classes.get(ps.lesson.class_id)
+            sh = normalize_shift(cls_obj.shift if cls_obj else None)
+            pinned_class_day_slot.add((ps.lesson.class_id, d_idx, ps.slot))
+            pinned_room_shift_day_slot.add((ps.room.id, sh, d_idx, ps.slot))
+            pinned_class_sub_day_count[(ps.lesson.class_id, ps.lesson.subject_id, d_idx)] += 1
+            if ps.lesson.teacher_id:
+                pinned_teacher_shift_day_slot.add((ps.lesson.teacher_id, sh, d_idx, ps.slot))
+                pinned_teacher_day_count[(ps.lesson.teacher_id, d_idx)] += 1
+                pinned_teacher_weekly_count[ps.lesson.teacher_id] += 1
+
         for l_idx, lesson in enumerate(self.requirements):
             target_class = self.classes[lesson.class_id]
             shift = normalize_shift(target_class.shift)
@@ -200,9 +225,15 @@ class TimetableGeneratorCPSAT:
 
             for d_idx, day in enumerate(self.DAYS):
                 for slot in range(1, self.slots_per_day + 1):
+                    if (lesson.class_id, d_idx, slot) in pinned_class_day_slot:
+                        continue
                     if teacher and (day, slot) in teacher.unavailable_slots:
                         continue
+                    if lesson.teacher_id and (lesson.teacher_id, shift, d_idx, slot) in pinned_teacher_shift_day_slot:
+                        continue
                     for room in valid_rooms:
+                        if (room.id, shift, d_idx, slot) in pinned_room_shift_day_slot:
+                            continue
                         var = model.new_bool_var(f"x_{l_idx}_{d_idx}_{slot}_{room.id}")
                         x[(l_idx, d_idx, slot, room.id)] = var
                         lesson_vars[l_idx].append(var)
@@ -252,20 +283,24 @@ class TimetableGeneratorCPSAT:
             if len(vlist) > 1:
                 model.add_at_most_one(vlist)
 
-        # 5. O'qituvchi kunlik va haftalik limitlari
+        # 5. O'qituvchi kunlik va haftalik limitlari (qotirilgan darslar hisobga olingan)
         for (tid, d_idx), vlist in teacher_day_vars.items():
             teacher = self.teachers.get(tid)
-            if teacher and len(vlist) > teacher.max_daily_hours:
-                model.add(sum(vlist) <= teacher.max_daily_hours)
+            if teacher:
+                rem_daily = max(0, teacher.max_daily_hours - pinned_teacher_day_count[(tid, d_idx)])
+                if len(vlist) > rem_daily:
+                    model.add(sum(vlist) <= rem_daily)
 
         for tid, vlist in teacher_all_vars.items():
             teacher = self.teachers.get(tid)
-            if teacher and len(vlist) > teacher.max_weekly_hours:
-                model.add(sum(vlist) <= teacher.max_weekly_hours)
+            if teacher:
+                rem_weekly = max(0, teacher.max_weekly_hours - pinned_teacher_weekly_count[tid])
+                if len(vlist) > rem_weekly:
+                    model.add(sum(vlist) <= rem_weekly)
 
-        # 6. Fan bo'yicha kuniga max soat
+        # 6. Fan bo'yicha kuniga max soat (qotirilgan darslar hisobga olingan)
         for (cid, sid, d_idx), vlist in class_sub_day_vars.items():
-            max_pd = class_sub_max_per_day[(cid, sid)]
+            max_pd = max(0, class_sub_max_per_day[(cid, sid)] - pinned_class_sub_day_count[(cid, sid, d_idx)])
             if len(vlist) > max_pd:
                 model.add(sum(vlist) <= max_pd)
 

@@ -185,6 +185,13 @@ class GenerateTimetableRequest(BaseModel):
     slots_per_day: int = 6
     save_partial: bool = False
 
+
+class TimetableEntryUpdate(BaseModel):
+    day: Optional[str] = None
+    lesson_order: Optional[int] = None
+    room_id: Optional[str] = None
+    is_pinned: Optional[bool] = None
+
 class TimetableItemResponse(BaseModel):
     id: str
     term: int

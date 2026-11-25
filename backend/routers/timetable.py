@@ -6,8 +6,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, or_, func
 from database.connection import get_tenant_db
 from database.models import TimetableEntry, SchoolClass, Subject, Teacher, Room, TimetableJob
-from schemas.schemas import GenerateTimetableRequest, TimetableItemResponse
+from schemas.schemas import GenerateTimetableRequest, TimetableItemResponse, TimetableEntryUpdate
 from services.timetable_service import TimetableService
+from services.generator import normalize_shift
 from core.rbac import CurrentUser, require_school_admin, require_any_authenticated
 from utils.crud_factory import paginate_response
 
@@ -165,6 +166,7 @@ async def get_all_timetables(
             "teacher_name": row.teacher_name or "Biriktirilmagan",
             "room_id": row.TimetableEntry.room_id,
             "room_number": row.room_number or (f"{row.class_name} xona" if row.class_name else "Sinf xonasi"),
+            "is_pinned": row.TimetableEntry.is_pinned,
         }
         for row in rows
     ]
@@ -225,6 +227,93 @@ async def get_timetable_by_class(
             "teacher_name": row.teacher_name or "Biriktirilmagan",
             "room_id": row.TimetableEntry.room_id,
             "room_number": row.room_number or (f"{row.class_name} xona" if row.class_name else "Sinf xonasi"),
+            "is_pinned": row.TimetableEntry.is_pinned,
         }
         for row in rows
     ]
+
+
+@router.patch("/entries/{entry_id}")
+async def update_timetable_entry(
+    entry_id: str,
+    data: TimetableEntryUpdate,
+    db: AsyncSession = Depends(get_tenant_db),
+    current_user: CurrentUser = Depends(require_school_admin),
+):
+    """
+    Dars jadvalidagi bitta katakni qo'lda ko'chirish yoki qotirish (is_pinned).
+    Sinf, o'qituvchi (smena bo'yicha) va xona (smena bo'yicha) to'qnashuvlarini tekshiradi.
+    """
+    entry = await db.get(TimetableEntry, entry_id)
+    if not entry:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Dars jadvali yozuvi topilmadi.",
+        )
+
+    target_day = data.day if data.day is not None else entry.day
+    target_slot = data.lesson_order if data.lesson_order is not None else entry.lesson_order
+    target_room_id = data.room_id if data.room_id is not None else entry.room_id
+
+    moved = (
+        target_day != entry.day
+        or target_slot != entry.lesson_order
+        or target_room_id != entry.room_id
+    )
+
+    if moved:
+        cur_class = await db.get(SchoolClass, entry.class_id)
+        target_shift = normalize_shift(cur_class.shift if cur_class else None)
+
+        conflicts_stmt = (
+            select(TimetableEntry, SchoolClass.name.label("cls_name"), SchoolClass.shift.label("cls_shift"))
+            .join(SchoolClass, TimetableEntry.class_id == SchoolClass.id)
+            .where(
+                TimetableEntry.school_id == entry.school_id,
+                TimetableEntry.term == entry.term,
+                TimetableEntry.day == target_day,
+                TimetableEntry.lesson_order == target_slot,
+                TimetableEntry.id != entry.id,
+            )
+        )
+        rows = (await db.execute(conflicts_stmt)).all()
+
+        for other, other_cls_name, other_shift in rows:
+            if other.class_id == entry.class_id:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=f"To'qnashuv: {other_cls_name} sinfi {target_day} {target_slot}-soatda boshqa darsda band.",
+                )
+            if normalize_shift(other_shift) == target_shift:
+                if entry.teacher_id and other.teacher_id == entry.teacher_id:
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail=f"To'qnashuv: o'qituvchi {target_day} {target_slot}-soatda {other_cls_name} sinfida band.",
+                    )
+                if other.room_id == target_room_id:
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail=f"To'qnashuv: xona {target_day} {target_slot}-soatda {other_cls_name} sinfi uchun band.",
+                    )
+
+        entry.day = target_day
+        entry.lesson_order = target_slot
+        entry.room_id = target_room_id
+
+    if data.is_pinned is not None:
+        entry.is_pinned = data.is_pinned
+
+    await db.commit()
+    await db.refresh(entry)
+
+    return {
+        "id": entry.id,
+        "term": entry.term,
+        "day": entry.day,
+        "lesson_order": entry.lesson_order,
+        "class_id": entry.class_id,
+        "subject_id": entry.subject_id,
+        "teacher_id": entry.teacher_id,
+        "room_id": entry.room_id,
+        "is_pinned": entry.is_pinned,
+    }

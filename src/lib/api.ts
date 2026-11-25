@@ -341,6 +341,20 @@ export const timetableApi = {
   },
   getByClass: (classId: string, term = 1) =>
     executeRequest<TimetableEntry[]>(`/timetable/by-class/${classId}?term=${term}`),
+  updateEntry: (
+    entryId: string,
+    data: { day?: string; lesson_order?: number; room_id?: string; is_pinned?: boolean }
+  ) =>
+    executeRequest<{
+      id: string;
+      day: string;
+      lesson_order: number;
+      room_id: string;
+      is_pinned: boolean;
+    }>(`/timetable/entries/${encodeURIComponent(entryId)}`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    }),
 };
 
 // 8. SCHOOL SETTINGS API

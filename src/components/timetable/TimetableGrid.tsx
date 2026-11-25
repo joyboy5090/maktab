@@ -12,6 +12,8 @@ import {
   BookOpen,
   FileSpreadsheet,
   Loader2,
+  Pin,
+  PinOff,
 } from 'lucide-react';
 import { useSchoolData } from '@/context/SchoolDataContext';
 import { useToast } from '@/context/ToastContext';
@@ -32,6 +34,7 @@ export interface TimetableCell {
   className: string;
   startTime: string;
   endTime: string;
+  isPinned?: boolean;
 }
 
 const DAYS: DayOfWeek[] = ['Dushanba', 'Seshanba', 'Chorshanba', 'Payshanba', 'Juma', 'Shanba'];
@@ -53,6 +56,7 @@ export const TimetableGrid: React.FC<{ refreshKey?: number }> = ({ refreshKey })
   const [dbEntries, setDbEntries] = useState<TimetableCell[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [isExportingPdf, setIsExportingPdf] = useState(false);
+  const [draggedCell, setDraggedCell] = useState<TimetableCell | null>(null);
   const gridContainerRef = useRef<HTMLDivElement>(null);
 
   // PostgreSQL Neon bazasidan dars jadvalini yuklash
@@ -80,6 +84,7 @@ export const TimetableGrid: React.FC<{ refreshKey?: number }> = ({ refreshKey })
               className: item.class_name,
               startTime: slot.start,
               endTime: slot.end,
+              isPinned: Boolean(item.is_pinned),
             };
           });
           setDbEntries(mapped);
@@ -108,6 +113,78 @@ export const TimetableGrid: React.FC<{ refreshKey?: number }> = ({ refreshKey })
 
   const getCellForSlot = (day: DayOfWeek, order: number): TimetableCell | undefined => {
     return classLessons.find((item) => item.day === day && item.lessonOrder === order);
+  };
+
+  const detectLocalConflict = (moving: TimetableCell, targetDay: DayOfWeek, targetSlot: number): string | null => {
+    const movingClassShift = classes.find((c) => c.name === moving.className)?.shift || '1-smena';
+    for (const other of dbEntries) {
+      if (other.id === moving.id) continue;
+      if (other.day !== targetDay || other.lessonOrder !== targetSlot) continue;
+      if (other.className === moving.className) {
+        return `${moving.className} sinfi ${targetDay} ${targetSlot}-soatda boshqa darsda band (${other.subjectName}).`;
+      }
+      const otherShift = classes.find((c) => c.name === other.className)?.shift || '1-smena';
+      if (otherShift === movingClassShift) {
+        if (moving.teacherName && moving.teacherName !== 'Biriktirilmagan' && other.teacherName === moving.teacherName) {
+          return `O'qituvchi (${moving.teacherName}) bu vaqtda ${other.className} sinfida band.`;
+        }
+        if (moving.roomNumber && other.roomNumber === moving.roomNumber) {
+          return `Xona (${moving.roomNumber}) bu vaqtda ${other.className} sinfi uchun band.`;
+        }
+      }
+    }
+    return null;
+  };
+
+  const handleDropOnSlot = async (targetDay: DayOfWeek, targetSlot: number) => {
+    if (!draggedCell) return;
+    const moving = draggedCell;
+    setDraggedCell(null);
+
+    if (moving.day === targetDay && moving.lessonOrder === targetSlot) return;
+
+    const localConflict = detectLocalConflict(moving, targetDay, targetSlot);
+    if (localConflict) {
+      const proceed = typeof window !== 'undefined'
+        ? window.confirm(`Ogohlantirish: ${localConflict}\nBaribir ko'chirishga urinib ko'rasizmi?`)
+        : false;
+      if (!proceed) return;
+    }
+
+    try {
+      await timetableApi.updateEntry(moving.id, {
+        day: targetDay,
+        lesson_order: targetSlot,
+      });
+      const slotTime = TIME_SLOTS.find((s) => s.order === targetSlot) || { start: '08:00', end: '08:45' };
+      setDbEntries((prev) =>
+        prev.map((item) =>
+          item.id === moving.id
+            ? { ...item, day: targetDay, lessonOrder: targetSlot, startTime: slotTime.start, endTime: slotTime.end }
+            : item
+        )
+      );
+      toast.success(`${moving.subjectName} darsi ${targetDay} ${targetSlot}-soatga ko'chirildi`);
+    } catch (err: any) {
+      toast.error(err.message || "Darsni ko'chirishda to'qnashuv yuz berdi");
+    }
+  };
+
+  const handleTogglePin = async (item: TimetableCell) => {
+    const nextPinned = !item.isPinned;
+    try {
+      await timetableApi.updateEntry(item.id, { is_pinned: nextPinned });
+      setDbEntries((prev) =>
+        prev.map((entry) => (entry.id === item.id ? { ...entry, isPinned: nextPinned } : entry))
+      );
+      toast.success(
+        nextPinned
+          ? `${item.subjectName} qotirildi (generator qayta ishlaganda o'zgarmaydi)`
+          : `${item.subjectName} qotirishdan chiqarildi`
+      );
+    } catch (err: any) {
+      toast.error(err.message || "Qotirish holatini o'zgartirishda xatolik");
+    }
   };
 
   // Real PDF Export using html2canvas & jsPDF
@@ -362,26 +439,50 @@ export const TimetableGrid: React.FC<{ refreshKey?: number }> = ({ refreshKey })
                   return (
                     <td
                       key={day}
+                      onDragOver={(e) => e.preventDefault()}
+                      onDrop={() => handleDropOnSlot(day, slot.order)}
                       className="p-2 border-r border-gray-200 last:border-r-0 align-top relative"
                     >
                       {item ? (
                         <div
+                          draggable
+                          onDragStart={() => setDraggedCell(item)}
+                          onDragEnd={() => setDraggedCell(null)}
                           onMouseEnter={() => setHoveredCell(item)}
                           onMouseLeave={() => setHoveredCell(null)}
                           style={{ borderLeftColor: item.colorHex }}
-                          className="h-24 p-2.5 rounded-xl bg-white border border-gray-200/80 border-l-4 shadow-sm hover:shadow-md transition-all cursor-pointer flex flex-col justify-between"
+                          className={`h-24 p-2.5 rounded-xl bg-white border border-l-4 shadow-sm hover:shadow-md transition-all cursor-grab active:cursor-grabbing flex flex-col justify-between ${
+                            item.isPinned ? 'border-amber-400 ring-1 ring-amber-200' : 'border-gray-200/80'
+                          }`}
                         >
                           <div>
-                            <div className="flex items-center justify-between">
-                              <span className="font-bold text-gray-900 text-xs truncate max-w-[100px]">
+                            <div className="flex items-center justify-between gap-1">
+                              <span className="font-bold text-gray-900 text-xs truncate max-w-[95px]">
                                 {item.subjectName}
                               </span>
-                              <span
-                                style={{ color: item.colorHex }}
-                                className="text-[10px] font-mono font-bold"
-                              >
-                                {item.subjectCode}
-                              </span>
+                              <div className="flex items-center gap-1 shrink-0">
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleTogglePin(item);
+                                  }}
+                                  title={item.isPinned ? "Qotirishni yechish" : "Darsni qotirish (Pin)"}
+                                  className={`p-0.5 rounded transition ${
+                                    item.isPinned
+                                      ? 'text-amber-600 bg-amber-50 hover:bg-amber-100'
+                                      : 'text-gray-300 hover:text-gray-600'
+                                  }`}
+                                >
+                                  {item.isPinned ? <Pin className="w-3 h-3" /> : <PinOff className="w-3 h-3" />}
+                                </button>
+                                <span
+                                  style={{ color: item.colorHex }}
+                                  className="text-[10px] font-mono font-bold"
+                                >
+                                  {item.subjectCode}
+                                </span>
+                              </div>
                             </div>
 
                             <div className="flex items-center gap-1 text-[11px] text-gray-500 mt-1 truncate">
