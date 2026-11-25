@@ -1,7 +1,7 @@
 from typing import List, Optional
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
-from jose import JWTError, jwt
+import jwt
 from pydantic import BaseModel
 from core.config import settings
 
@@ -29,7 +29,7 @@ async def get_current_user(token: str = Depends(oauth2_scheme)) -> CurrentUser:
         if user_id is None:
             raise credentials_exception
         return CurrentUser(id=user_id, email=payload.get("email", ""), role=role, school_id=school_id)
-    except JWTError:
+    except jwt.PyJWTError:
         raise credentials_exception
 
 class RoleChecker:

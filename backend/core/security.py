@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta, timezone
 from typing import Any, Union, Optional
-from jose import jwt
+import jwt
 import bcrypt
 from core.config import settings
 

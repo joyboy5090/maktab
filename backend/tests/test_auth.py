@@ -1,6 +1,6 @@
 import pytest
 from unittest.mock import patch, AsyncMock, MagicMock
-from jose import jwt
+import jwt
 from httpx import AsyncClient
 from pydantic import ValidationError
 from schemas.schemas import LoginRequest, UserCreate
