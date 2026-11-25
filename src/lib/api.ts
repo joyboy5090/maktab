@@ -21,6 +21,7 @@ import {
   TimetableEntry,
   TimetableGenerateRequest,
   TimetableGenerateResponse,
+  TimetableJobStatusResponse,
   SchoolProfile,
   PaginatedResponse,
   UserProfile,
@@ -323,6 +324,8 @@ export const timetableApi = {
       body: JSON.stringify(body),
     });
   },
+  getJob: (jobId: string) =>
+    executeRequest<TimetableJobStatusResponse>(`/timetable/jobs/${encodeURIComponent(jobId)}`),
   getAll: async (term = 1): Promise<TimetableEntry[]> => {
     const res = await executeRequest<PaginatedResponse<TimetableEntry> | TimetableEntry[]>(
       `/timetable/all?term=${term}&per_page=3000`

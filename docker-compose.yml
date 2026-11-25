@@ -41,6 +41,25 @@ services:
       REFRESH_TOKEN_EXPIRE_DAYS: ${REFRESH_TOKEN_EXPIRE_DAYS:-7}
       DEFAULT_ADMIN_EMAIL: ${DEFAULT_ADMIN_EMAIL:-}
       DEFAULT_ADMIN_PASSWORD: ${DEFAULT_ADMIN_PASSWORD:-}
+      PROCESS_JOBS_EXTERNALLY: "true"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # ==========================================
+  # Background Timetable Worker Service
+  # ==========================================
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: maktab_worker
+    restart: unless-stopped
+    command: python -m services.worker
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL .env faylida ko'rsatilishi shart}
+      ALEMBIC_DATABASE_URL: ${ALEMBIC_DATABASE_URL:?ALEMBIC_DATABASE_URL .env faylida ko'rsatilishi shart}
+      SECRET_KEY: ${SECRET_KEY:?SECRET_KEY .env faylida ko'rsatilishi shart}
     depends_on:
       postgres:
         condition: service_healthy

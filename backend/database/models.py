@@ -284,3 +284,22 @@ class RefreshToken(Base):
     __table_args__ = (
         Index("idx_refresh_tokens_user", "user_id"),
     )
+
+
+class TimetableJob(Base):
+    """Asinxron dars jadvali generatsiya vazifalari"""
+    __tablename__ = "timetable_jobs"
+
+    id = Column(UUID(as_uuid=False), primary_key=True, default=generate_uuid)
+    school_id = Column(UUID(as_uuid=False), ForeignKey("schools.id", ondelete="CASCADE"), nullable=False)
+    term = Column(Integer, default=1, nullable=False)
+    status = Column(String(20), default="pending", nullable=False)
+    progress = Column(Integer, default=0, nullable=False)
+    result_json = Column(JSONB, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=utc_now)
+    finished_at = Column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        CheckConstraint("status IN ('pending', 'running', 'done', 'failed')", name="ck_timetable_jobs_status"),
+        Index("idx_timetable_jobs_school_status", "school_id", "status"),
+    )

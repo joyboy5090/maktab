@@ -1,9 +1,11 @@
+import os
+import asyncio
 from typing import List, Dict, Any, Optional
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, or_, func
 from database.connection import get_tenant_db
-from database.models import TimetableEntry, SchoolClass, Subject, Teacher, Room
+from database.models import TimetableEntry, SchoolClass, Subject, Teacher, Room, TimetableJob
 from schemas.schemas import GenerateTimetableRequest, TimetableItemResponse
 from services.timetable_service import TimetableService
 from core.rbac import CurrentUser, require_school_admin, require_any_authenticated
@@ -11,15 +13,15 @@ from utils.crud_factory import paginate_response
 
 router = APIRouter(prefix="/timetable", tags=["Dars Jadvali Generator & API"])
 
-@router.post("/generate")
+@router.post("/generate", status_code=status.HTTP_202_ACCEPTED)
 async def generate_timetable(
     req: GenerateTimetableRequest,
     db: AsyncSession = Depends(get_tenant_db),
     current_user: CurrentUser = Depends(require_school_admin)
 ):
     """
-    Tanlangan chorak (term) bo'yicha sinflarga kiritilgan fanlar va ularning
-    choraklik/haftalik soatlari asosida avtomatik dars jadvalini generatsiya qiladi.
+    Tanlangan chorak (term) bo'yicha asinxron dars jadvali generatsiya vazifasini yaratadi.
+    Bir maktab uchun bir vaqtda faqat bitta faol vazifa bo'lishiga ruxsat beriladi.
     """
     if not current_user.school_id:
         raise HTTPException(
@@ -27,21 +29,77 @@ async def generate_timetable(
             detail="Foydalanuvchiga maktab biriktirilmagan."
         )
 
-    result = await TimetableService.generate_and_save_schedule(
-        db=db,
-        school_id=current_user.school_id,
-        term=req.term,
-        slots_per_day=req.slots_per_day,
-        save_partial=req.save_partial
+    active_res = await db.execute(
+        select(TimetableJob)
+        .where(
+            TimetableJob.school_id == current_user.school_id,
+            TimetableJob.status.in_(["pending", "running"]),
+        )
+        .limit(1)
     )
-
-    if not result.get("success") and result.get("status") != "partial":
+    existing_job = active_res.scalar_one_or_none()
+    if existing_job:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=result.get("message")
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Ushbu maktab uchun jadval generatsiyasi allaqachon jarayonda."
         )
 
-    return result
+    job = TimetableJob(
+        school_id=current_user.school_id,
+        term=req.term,
+        status="pending",
+        progress=0,
+    )
+    db.add(job)
+    await db.commit()
+    await db.refresh(job)
+
+    if os.getenv("PROCESS_JOBS_EXTERNALLY", "false").lower() != "true":
+        asyncio.create_task(
+            TimetableService.execute_job_in_background(
+                job_id=job.id,
+                school_id=current_user.school_id,
+                term=req.term,
+                slots_per_day=req.slots_per_day,
+                save_partial=req.save_partial,
+            )
+        )
+
+    return {
+        "job_id": job.id,
+        "status": job.status,
+        "progress": job.progress,
+        "term": job.term,
+        "message": "Dars jadvali generatsiyasi navbatga qo'yildi.",
+    }
+
+
+@router.get("/jobs/{job_id}")
+async def get_timetable_job_status(
+    job_id: str,
+    db: AsyncSession = Depends(get_tenant_db),
+    current_user: CurrentUser = Depends(require_any_authenticated)
+):
+    """
+    Dars jadvali generatsiya vazifasining holati, progressi va natijasini qaytaradi (RLS bilan himoyalangan).
+    """
+    job = await db.get(TimetableJob, job_id)
+    if not job:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Generatsiya vazifasi topilmadi."
+        )
+
+    return {
+        "id": job.id,
+        "school_id": job.school_id,
+        "term": job.term,
+        "status": job.status,
+        "progress": job.progress,
+        "result": job.result_json,
+        "created_at": job.created_at,
+        "finished_at": job.finished_at,
+    }
 
 @router.get("/all")
 async def get_all_timetables(

@@ -197,13 +197,49 @@ export type TimetableEntry = TimetableCell;
 export interface TimetableGenerateRequest {
   term?: number;
   slots_per_day?: number;
+  save_partial?: boolean;
+}
+
+export interface UnplacedLessonItem {
+  lesson_id: string;
+  class_id: string;
+  class_name: string;
+  subject_id: string;
+  subject_name: string;
+  teacher_id?: string | null;
+  teacher_name?: string | null;
+  reason: string;
 }
 
 export interface TimetableGenerateResponse {
-  success: boolean;
+  job_id?: string;
+  status?: string;
+  progress?: number;
+  success?: boolean;
   message: string;
-  total_lessons_scheduled: number;
+  total_lessons_scheduled?: number;
+  total_required?: number;
+  unplaced?: UnplacedLessonItem[];
   term: number;
+}
+
+export interface TimetableJobStatusResponse {
+  id: string;
+  school_id: string;
+  term: number;
+  status: 'pending' | 'running' | 'done' | 'failed';
+  progress: number;
+  result?: {
+    success: boolean;
+    status: string;
+    message: string;
+    total_lessons_scheduled: number;
+    total_required: number;
+    unplaced: UnplacedLessonItem[];
+    term: number;
+  } | null;
+  created_at: string;
+  finished_at?: string | null;
 }
 
 export interface SchoolProfile {
