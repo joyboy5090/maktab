@@ -147,14 +147,28 @@ async def test_invalid_login(async_client: AsyncClient):
 
 
 def test_access_token_has_type_access():
+    import uuid as uuid_lib
     token = create_access_token(
-        subject="user-1",
+        subject=str(uuid_lib.uuid4()),
         school_id="94561d8a-2ca8-4bb2-9b94-e67a53fc472c",
         role="SCHOOL_ADMIN",
         email="admin@maktab142.uz"
     )
     payload = decode_token(token)
     assert payload.get("type") == "access"
+    assert payload.get("jti")
+    uuid_lib.UUID(payload["jti"])
+
+    rt = create_refresh_token(
+        subject=str(uuid_lib.uuid4()),
+        school_id="94561d8a-2ca8-4bb2-9b94-e67a53fc472c",
+        role="SCHOOL_ADMIN",
+        email="admin@maktab142.uz"
+    )
+    rt_payload = decode_token(rt)
+    assert rt_payload.get("type") == "refresh"
+    assert rt_payload.get("jti")
+    uuid_lib.UUID(rt_payload["jti"])
 
 
 @pytest.mark.asyncio
@@ -193,23 +207,131 @@ async def test_token_without_type_rejected_on_me(async_client: AsyncClient):
 
 @pytest.mark.asyncio
 async def test_teacher_put_school_forbidden_and_get_allowed(async_client: AsyncClient):
+    import uuid as uuid_lib
+    from main import app
+    from database.connection import get_db_session
+
+    teacher_id = str(uuid_lib.uuid4())
+    mock_user = MagicMock()
+    mock_user.id = teacher_id
+    mock_user.email = "teacher@maktab142.uz"
+    mock_user.role = "TEACHER"
+    mock_user.school_id = "94561d8a-2ca8-4bb2-9b94-e67a53fc472c"
+    mock_user.is_active = True
+
+    mock_db = AsyncMock()
+    mock_db.get = AsyncMock(return_value=mock_user)
+
+    async def override_db():
+        yield mock_db
+
     teacher_token = create_access_token(
-        subject="teacher-1",
+        subject=teacher_id,
         school_id="94561d8a-2ca8-4bb2-9b94-e67a53fc472c",
         role="TEACHER",
         email="teacher@maktab142.uz"
     )
     headers = {"Authorization": f"Bearer {teacher_token}"}
 
-    put_res = await async_client.put(
-        "/auth/school",
-        headers=headers,
-        json={"name": "Yangi Nomi"}
-    )
-    assert put_res.status_code == 403
+    app.dependency_overrides[get_db_session] = override_db
+    try:
+        put_res = await async_client.put(
+            "/auth/school",
+            headers=headers,
+            json={"name": "Yangi Nomi"}
+        )
+        assert put_res.status_code == 403
 
-    get_res = await async_client.get("/auth/school", headers=headers)
-    assert get_res.status_code == 200
+        get_res = await async_client.get("/auth/school", headers=headers)
+        assert get_res.status_code == 200
+    finally:
+        app.dependency_overrides.pop(get_db_session, None)
+
+
+@pytest.mark.asyncio
+async def test_token_missing_role_and_inactive_and_deleted_user_rejected(async_client: AsyncClient):
+    import uuid as uuid_lib
+    from main import app
+    from database.connection import get_db_session
+
+    user_id = str(uuid_lib.uuid4())
+    # 1. Missing role claim must be rejected (no fallback to TEACHER)
+    no_role_token = jwt.encode(
+        {"sub": user_id, "type": "access"},
+        settings.SECRET_KEY,
+        algorithm=settings.ALGORITHM,
+    )
+    res_no_role = await async_client.get(
+        "/auth/me", headers={"Authorization": f"Bearer {no_role_token}"}
+    )
+    assert res_no_role.status_code == 401
+
+    valid_token = create_access_token(
+        subject=user_id,
+        school_id="94561d8a-2ca8-4bb2-9b94-e67a53fc472c",
+        role="SCHOOL_ADMIN",
+        email="inactive@maktab142.uz",
+    )
+
+    # 2. Inactive user (is_active=False) must be rejected with 401
+    inactive_user = MagicMock()
+    inactive_user.id = user_id
+    inactive_user.is_active = False
+    mock_db_inactive = AsyncMock()
+    mock_db_inactive.get = AsyncMock(return_value=inactive_user)
+
+    async def override_inactive():
+        yield mock_db_inactive
+
+    app.dependency_overrides[get_db_session] = override_inactive
+    try:
+        res_inactive = await async_client.get(
+            "/auth/me", headers={"Authorization": f"Bearer {valid_token}"}
+        )
+        assert res_inactive.status_code == 401
+    finally:
+        app.dependency_overrides.pop(get_db_session, None)
+
+    # 3. Deleted user (db.get returns None) must be rejected with 401
+    mock_db_deleted = AsyncMock()
+    mock_db_deleted.get = AsyncMock(return_value=None)
+
+    async def override_deleted():
+        yield mock_db_deleted
+
+    app.dependency_overrides[get_db_session] = override_deleted
+    try:
+        res_deleted = await async_client.get(
+            "/auth/me", headers={"Authorization": f"Bearer {valid_token}"}
+        )
+        assert res_deleted.status_code == 401
+    finally:
+        app.dependency_overrides.pop(get_db_session, None)
+
+
+def test_config_fails_fast_without_database_url_or_secret_key(monkeypatch):
+    from core.config import get_async_db_url, Settings
+
+    with pytest.raises(ValueError, match="DATABASE_URL"):
+        get_async_db_url("")
+
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("SECRET_KEY", raising=False)
+    with pytest.raises(ValueError):
+        Settings(DATABASE_URL="", SECRET_KEY="")
+
+
+def test_school_create_requires_strong_admin_password():
+    from routers.schools import SchoolCreateInput
+
+    with pytest.raises(ValidationError):
+        SchoolCreateInput(name="Test", slug="test-slug", email="t@m.uz")
+
+    with pytest.raises(ValidationError):
+        SchoolCreateInput(name="Test", slug="test-slug", email="t@m.uz", admin_password="weak")
+
+    valid = SchoolCreateInput(name="Test", slug="test-slug", email="t@m.uz", admin_password="StrongPass1")
+    assert valid.admin_password == "StrongPass1"
 
 
 @pytest.mark.asyncio

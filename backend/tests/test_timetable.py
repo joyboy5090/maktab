@@ -102,7 +102,7 @@ async def test_teacher_my_timetable_rbac_and_rls(async_client: AsyncClient, auth
     import uuid
     from sqlalchemy import select, update, delete
     from database.connection import AsyncSessionLocal
-    from database.models import Teacher, User
+    from database.models import Teacher, User, School
     from core.security import get_password_hash
 
     list_res = await async_client.get("/timetable/all?term=1&per_page=50", headers=auth_headers)
@@ -116,6 +116,8 @@ async def test_teacher_my_timetable_rbac_and_rls(async_client: AsyncClient, auth
     school_id = "94561d8a-2ca8-4bb2-9b94-e67a53fc472c"
     other_school_id = str(uuid.uuid4())
     user_a_id = str(uuid.uuid4())
+    unlinked_user_id = str(uuid.uuid4())
+    other_user_id = str(uuid.uuid4())
 
     async with AsyncSessionLocal() as db:
         orig_user_id = (
@@ -130,7 +132,31 @@ async def test_teacher_my_timetable_rbac_and_rls(async_client: AsyncClient, auth
             first_name="Test",
             last_name="Teacher",
         )
-        db.add(user_a)
+        unlinked_user = User(
+            id=unlinked_user_id,
+            school_id=school_id,
+            role="TEACHER",
+            email=f"unlinked_{unlinked_user_id[:8]}@maktab142.uz",
+            password_hash=get_password_hash("secret123"),
+            first_name="Unlinked",
+            last_name="Teacher",
+        )
+        other_school = School(
+            id=other_school_id,
+            name="Other RLS School",
+            slug=f"other-rls-{other_school_id[:8]}",
+            email=f"other_{other_school_id[:8]}@maktab.uz",
+        )
+        other_user = User(
+            id=other_user_id,
+            school_id=other_school_id,
+            role="TEACHER",
+            email=f"other_teacher_{other_user_id[:8]}@other.uz",
+            password_hash=get_password_hash("secret123"),
+            first_name="Other",
+            last_name="Teacher",
+        )
+        db.add_all([user_a, unlinked_user, other_school, other_user])
         await db.flush()
         await db.execute(
             update(Teacher).where(Teacher.id == teacher_a_id).values(user_id=user_a_id)
@@ -165,10 +191,10 @@ async def test_teacher_my_timetable_rbac_and_rls(async_client: AsyncClient, auth
 
         # 3. Unlinked TEACHER gets empty list
         unlinked_token = create_access_token(
-            subject=str(uuid.uuid4()),
+            subject=unlinked_user_id,
             school_id=school_id,
             role="TEACHER",
-            email="unlinked@maktab142.uz",
+            email=f"unlinked_{unlinked_user_id[:8]}@maktab142.uz",
         )
         unlinked_res = await async_client.get(
             "/timetable/my?term=1", headers={"Authorization": f"Bearer {unlinked_token}"}
@@ -176,12 +202,12 @@ async def test_teacher_my_timetable_rbac_and_rls(async_client: AsyncClient, auth
         assert unlinked_res.status_code == 200
         assert unlinked_res.json() == []
 
-        # 4. RLS / tenant isolation: same user_a_id with another school_id sees 0 rows
+        # 4. RLS / tenant isolation: teacher in another school sees 0 rows
         other_school_token = create_access_token(
-            subject=user_a_id,
+            subject=other_user_id,
             school_id=other_school_id,
             role="TEACHER",
-            email=f"teacher_{user_a_id[:8]}@other.uz",
+            email=f"other_teacher_{other_user_id[:8]}@other.uz",
         )
         rls_res = await async_client.get(
             "/timetable/my?term=1", headers={"Authorization": f"Bearer {other_school_token}"}
@@ -193,5 +219,52 @@ async def test_teacher_my_timetable_rbac_and_rls(async_client: AsyncClient, auth
             await db.execute(
                 update(Teacher).where(Teacher.id == teacher_a_id).values(user_id=orig_user_id)
             )
-            await db.execute(delete(User).where(User.id == user_a_id))
+            await db.execute(delete(User).where(User.id.in_([user_a_id, unlinked_user_id, other_user_id])))
+            await db.execute(delete(School).where(School.id == other_school_id))
             await db.commit()
+
+
+@pytest.mark.asyncio
+async def test_readonly_get_does_not_commit_and_pagination_capped(async_client: AsyncClient, auth_headers: dict):
+    from unittest.mock import AsyncMock, patch
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    with patch.object(AsyncSession, "commit", new_callable=AsyncMock) as commit_spy:
+        res = await async_client.get("/curriculum/all?per_page=10", headers=auth_headers)
+        assert res.status_code == 200
+        assert commit_spy.await_count == 0
+
+    cap_res = await async_client.get("/curriculum/all?per_page=201", headers=auth_headers)
+    assert cap_res.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_generate_and_save_schedule_respects_teacher_limits_and_uses_to_thread():
+    from unittest.mock import AsyncMock, MagicMock, patch
+    from services.timetable_service import TimetableService
+    from database.models import Teacher, Room, SchoolClass, Subject, ClassSubjectAllocation
+
+    t1 = Teacher(id="t1", school_id="s1", full_name="Alimov", max_weekly_hours=1, max_daily_hours=1)
+    r1 = Room(id="r1", school_id="s1", room_number="101", capacity=30, room_type="GENERAL")
+    c1 = SchoolClass(id="c1", school_id="s1", name="5-A", grade_level=5, student_count=25, shift="MORNING")
+    s1 = Subject(id="s1", school_id="s1", name="Matematika", short_code="MAT", required_room_type="GENERAL")
+    a1 = ClassSubjectAllocation(
+        id="a1", school_id="s1", class_id="c1", subject_id="s1", teacher_id="t1",
+        term=1, weekly_hours=2, max_hours_per_day=2,
+    )
+
+    def _res(items):
+        m = MagicMock()
+        m.scalars.return_value.all.return_value = items
+        return m
+
+    mock_db = AsyncMock()
+    mock_db.execute = AsyncMock(side_effect=[_res([t1]), _res([r1]), _res([c1]), _res([s1]), _res([a1])])
+
+    with patch("services.timetable_service.asyncio.to_thread", wraps=asyncio.to_thread) as spy_thread:
+        result = await TimetableService.generate_and_save_schedule(mock_db, school_id="s1", term=1)
+        assert spy_thread.await_count == 1
+        assert result["success"] is False
+        assert result["status"] == "failed"
+        assert len(result["unplaced"]) >= 1
+        assert "Sabablar:" in result["message"]

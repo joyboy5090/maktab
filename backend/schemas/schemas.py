@@ -1,4 +1,5 @@
 import re
+from datetime import time
 from typing import Optional, List, Any
 from pydantic import BaseModel, EmailStr, field_validator
 
@@ -207,3 +208,15 @@ class TimetableItemResponse(BaseModel):
     teacher_name: Optional[str] = None
     room_id: str
     room_number: Optional[str] = None
+
+
+class TimeSlotCreate(BaseModel):
+    lesson_order: int
+    shift: str = "MORNING"
+    start_time: time
+    end_time: time
+
+
+class TimeSlotResponse(TimeSlotCreate):
+    id: str
+    school_id: str

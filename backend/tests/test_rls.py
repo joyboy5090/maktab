@@ -1,16 +1,17 @@
 import os
 import subprocess
 import urllib.parse
+from datetime import time
 import pytest
 import asyncpg
 from sqlalchemy import select, update, text
-from sqlalchemy.exc import ProgrammingError
+from sqlalchemy.exc import ProgrammingError, IntegrityError
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 
 import database.connection as db_conn
 from core.config import get_async_db_url
 from core.rbac import CurrentUser
-from database.models import School, Teacher
+from database.models import School, Teacher, Room, SchoolClass, Subject, TimeSlot, TimetableEntry
 
 
 def _get_db_urls():
@@ -120,6 +121,80 @@ async def test_rls_tenant_isolation_with_real_postgres(monkeypatch):
             assert {t.id for t in sa_teachers} == {teacher_a_id, teacher_b_id}
         finally:
             await gen_sa.aclose()
+
+        # 6. Verify double-booking IntegrityError (teacher & room) and TIME column type
+        gen_db = db_conn.get_tenant_db(current_user=user_a)
+        db_t = await gen_db.__anext__()
+        try:
+            room_a1 = Room(school_id=school_a_id, room_number="101", capacity=30, room_type="GENERAL")
+            room_a2 = Room(school_id=school_a_id, room_number="102", capacity=30, room_type="GENERAL")
+            cls_a1 = SchoolClass(school_id=school_a_id, name="5-A", grade_level=5, student_count=25, shift="MORNING")
+            cls_a2 = SchoolClass(school_id=school_a_id, name="5-B", grade_level=5, student_count=25, shift="MORNING")
+            subj_a = Subject(school_id=school_a_id, name="Matematika", short_code="MAT", required_room_type="GENERAL")
+            teacher_a2 = Teacher(school_id=school_a_id, full_name="Teacher A2", primary_subject="Fizika")
+            ts_a = TimeSlot(
+                school_id=school_a_id,
+                lesson_order=1,
+                shift="MORNING",
+                start_time=time(8, 0),
+                end_time=time(8, 45),
+            )
+            db_t.add_all([room_a1, room_a2, cls_a1, cls_a2, subj_a, teacher_a2, ts_a])
+            await db_t.flush()
+            assert isinstance(ts_a.start_time, time)
+            cls_a1_id, cls_a2_id = cls_a1.id, cls_a2.id
+            subj_a_id = subj_a.id
+            teacher_a2_id = teacher_a2.id
+            room_a1_id, room_a2_id = room_a1.id, room_a2.id
+
+            base_entry = TimetableEntry(
+                school_id=school_a_id,
+                term=1,
+                day="Dushanba",
+                lesson_order=1,
+                class_id=cls_a1_id,
+                subject_id=subj_a_id,
+                teacher_id=teacher_a_id,
+                room_id=room_a1_id,
+            )
+            db_t.add(base_entry)
+            await db_t.commit()
+
+            # Overlapping teacher in same slot must raise IntegrityError
+            db_t.add(
+                TimetableEntry(
+                    school_id=school_a_id,
+                    term=1,
+                    day="Dushanba",
+                    lesson_order=1,
+                    class_id=cls_a2_id,
+                    subject_id=subj_a_id,
+                    teacher_id=teacher_a_id,
+                    room_id=room_a2_id,
+                )
+            )
+            with pytest.raises(IntegrityError):
+                await db_t.flush()
+            await db_t.rollback()
+
+            # Overlapping room in same slot must raise IntegrityError
+            db_t.add(
+                TimetableEntry(
+                    school_id=school_a_id,
+                    term=1,
+                    day="Dushanba",
+                    lesson_order=1,
+                    class_id=cls_a2_id,
+                    subject_id=subj_a_id,
+                    teacher_id=teacher_a2_id,
+                    room_id=room_a1_id,
+                )
+            )
+            with pytest.raises(IntegrityError):
+                await db_t.flush()
+            await db_t.rollback()
+        finally:
+            await gen_db.aclose()
 
     finally:
         await owner_engine.dispose()

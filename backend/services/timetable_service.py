@@ -153,8 +153,8 @@ class TimetableService:
             CSPTeacher(
                 id=t.id,
                 name=t.full_name,
-                max_weekly_hours=t.max_weekly_hours or 36,
-                max_daily_hours=t.max_daily_hours or 6,
+                max_weekly_hours=t.max_weekly_hours if t.max_weekly_hours is not None else 36,
+                max_daily_hours=t.max_daily_hours if t.max_daily_hours is not None else 6,
                 unavailable_slots=TimetableService._parse_unavailable_slots(getattr(t, "unavailable_slots", None))
             )
             for t in db_teachers
@@ -240,18 +240,27 @@ class TimetableService:
             )
 
         if save_partial:
-            solution, unplaced = solver.solve_partial()
+            solution, unplaced = await asyncio.to_thread(solver.solve_partial)
         else:
-            solution = solver.solve()
+            solution = await asyncio.to_thread(solver.solve)
             unplaced = solver.unplaced
 
         all_placed = solution is not None and len(solution) == len(csp_reqs) and not unplaced
 
         if not all_placed and not save_partial:
+            conflict_details = "; ".join(
+                f"{u.get('class_name', '')} ({u.get('teacher_name', '')}): {u.get('reason', '')}"
+                for u in (unplaced or [])[:3]
+            )
+            detail_suffix = f" Sabablar: {conflict_details}" if conflict_details else ""
             return {
                 "success": False,
                 "status": "failed",
-                "message": f"{term}-chorak o'quv rejasidagi barcha darslarni ({len(csp_reqs)} tadan {len(unplaced)} tasi joylashmadi) ziddiyatsiz joylashtirib bo'lmadi.",
+                "message": (
+                    f"{term}-chorak o'quv rejasidagi barcha darslarni "
+                    f"({len(csp_reqs)} tadan {len(unplaced)} tasi joylashmadi) "
+                    f"ziddiyatsiz joylashtirib bo'lmadi.{detail_suffix}"
+                ),
                 "total_lessons_scheduled": 0,
                 "total_required": len(csp_reqs),
                 "unplaced": unplaced,
@@ -385,8 +394,8 @@ class TimetableService:
                     CSPTeacher(
                         id=t.id,
                         name=t.full_name,
-                        max_weekly_hours=t.max_weekly_hours or 36,
-                        max_daily_hours=t.max_daily_hours or 6,
+                        max_weekly_hours=t.max_weekly_hours if t.max_weekly_hours is not None else 36,
+                        max_daily_hours=t.max_daily_hours if t.max_daily_hours is not None else 6,
                         unavailable_slots=TimetableService._parse_unavailable_slots(getattr(t, "unavailable_slots", None)),
                     )
                     for t in db_teachers

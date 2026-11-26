@@ -37,6 +37,7 @@ def create_access_token(
         "email": email or (str(subject) if "@" in str(subject) else ""),
         "school_id": str(school_id) if school_id else None,
         "role": role,
+        "jti": str(uuid.uuid4()),
         "type": "access",
         "exp": expire
     }

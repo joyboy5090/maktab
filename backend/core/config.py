@@ -11,8 +11,10 @@ if os.path.exists(backend_env):
 load_dotenv()
 
 def get_async_db_url(url: str) -> str:
-    if not url:
-        return "postgresql+asyncpg://postgres:postgres@localhost:5432/maktab_sms_db"
+    if not url or not url.strip():
+        raise ValueError(
+            "XATOLIK: DATABASE_URL environment variable topilmadi! .env faylida DATABASE_URL ni sozlang."
+        )
     
     parsed = urllib.parse.urlsplit(url)
     
@@ -43,7 +45,8 @@ class Settings(BaseSettings):
     @field_validator("DATABASE_URL", mode="before")
     @classmethod
     def assemble_db_connection(cls, v: str) -> str:
-        return get_async_db_url(v)
+        url = v or os.getenv("DATABASE_URL", "")
+        return get_async_db_url(url)
 
     @field_validator("ALEMBIC_DATABASE_URL", mode="before")
     @classmethod

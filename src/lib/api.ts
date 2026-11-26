@@ -283,7 +283,7 @@ export const subjectsApi = {
 export const curriculumApi = {
   getAll: async (term?: number): Promise<CurriculumAllocation[]> => {
     const query = new URLSearchParams();
-    query.set("per_page", "1000");
+    query.set("per_page", "200");
     if (term) query.set("term", String(term));
     const res = await executeRequest<PaginatedResponse<CurriculumAllocation> | CurriculumAllocation[]>(
       `/curriculum/all?${query.toString()}`

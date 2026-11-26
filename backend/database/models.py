@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 from sqlalchemy import (
-    Column, String, Boolean, Integer, Float, ForeignKey, DateTime, Text, UniqueConstraint, Index, CheckConstraint
+    Column, String, Boolean, Integer, Float, ForeignKey, DateTime, Time, Text, UniqueConstraint, Index, CheckConstraint, text
 )
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship
@@ -213,8 +213,8 @@ class TimeSlot(Base):
     school_id = Column(UUID(as_uuid=False), ForeignKey("schools.id", ondelete="CASCADE"), nullable=False)
     lesson_order = Column(Integer, nullable=False)
     shift = Column(String(50), default="MORNING", nullable=False)
-    start_time = Column(String(20), nullable=False)
-    end_time = Column(String(20), nullable=False)
+    start_time = Column(Time, nullable=False)
+    end_time = Column(Time, nullable=False)
     created_at = Column(DateTime(timezone=True), default=utc_now)
 
     __table_args__ = (
@@ -248,6 +248,17 @@ class TimetableEntry(Base):
             name="ck_timetable_day"
         ),
         UniqueConstraint("school_id", "term", "day", "lesson_order", "class_id", name="uq_class_slot_term"),
+        UniqueConstraint("school_id", "term", "day", "lesson_order", "teacher_id", name="uq_teacher_slot_term"),
+        Index(
+            "uq_room_slot_term",
+            "school_id",
+            "term",
+            "day",
+            "lesson_order",
+            "room_id",
+            unique=True,
+            postgresql_where=text("room_id IS NOT NULL"),
+        ),
         Index("idx_timetable_school_term", "school_id", "term"),
         Index("idx_timetable_class", "class_id"),
     )

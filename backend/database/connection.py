@@ -3,7 +3,6 @@ from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sess
 from sqlalchemy.orm import declarative_base
 from sqlalchemy import text, event
 from core.config import settings
-from core.rbac import CurrentUser, get_current_user
 from fastapi import Depends
 
 engine = create_async_engine(
@@ -29,16 +28,24 @@ async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
     async with AsyncSessionLocal() as session:
         @event.listens_for(session.sync_session, "after_begin")
         def _set_super_admin_ctx(sync_sess, transaction, connection):
-            connection.execute(text("SELECT set_config('app.is_super_admin', 'on', true)"))
+            connection.execute(
+                text(
+                    "SELECT set_config('app.is_super_admin', 'on', true), "
+                    "set_config('app.current_role', 'SUPER_ADMIN', true)"
+                )
+            )
 
         try:
             yield session
-            await session.commit()
         except Exception:
             await session.rollback()
             raise
         finally:
             await session.close()
+
+
+from core.rbac import CurrentUser, get_current_user
+
 
 async def get_tenant_db(
     current_user: CurrentUser = Depends(get_current_user),
@@ -49,6 +56,7 @@ async def get_tenant_db(
     PostgreSQL ga app.current_school_id va app.is_super_admin ni uzatadi.
     """
     is_super_admin = "on" if current_user.role == "SUPER_ADMIN" else "off"
+    role_str = str(current_user.role or "")
     school_id_str = str(current_user.school_id) if current_user.school_id else ""
 
     async with AsyncSessionLocal() as session:
@@ -57,14 +65,14 @@ async def get_tenant_db(
             connection.execute(
                 text(
                     "SELECT set_config('app.is_super_admin', :sa, true), "
+                    "set_config('app.current_role', :role, true), "
                     "set_config('app.current_school_id', :sid, true)"
                 ),
-                {"sa": is_super_admin, "sid": school_id_str}
+                {"sa": is_super_admin, "role": role_str, "sid": school_id_str}
             )
 
         try:
             yield session
-            await session.commit()
         except Exception:
             await session.rollback()
             raise

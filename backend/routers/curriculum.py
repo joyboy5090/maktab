@@ -14,7 +14,7 @@ router = APIRouter(prefix="/curriculum", tags=["O'quv Rejasi (Sinf Fanlari & Cho
 async def get_all_allocations(
     term: Optional[int] = None,
     page: int = Query(1, ge=1, description="Sahifa raqami"),
-    per_page: int = Query(500, ge=1, le=2000, description="Har sahifadagi elementlar soni"),
+    per_page: int = Query(50, ge=1, le=200, description="Har sahifadagi elementlar soni"),
     db: AsyncSession = Depends(get_tenant_db),
     current_user: CurrentUser = Depends(require_any_authenticated)
 ):

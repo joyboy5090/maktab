@@ -1,6 +1,6 @@
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from database.connection import get_db_session
@@ -20,8 +20,17 @@ class SchoolCreateInput(BaseModel):
     admin_first_name: Optional[str] = "Direktor"
     admin_last_name: Optional[str] = "Maktabov"
     admin_email: Optional[str] = None
-    admin_password: Optional[str] = "Admin123!"
+    admin_password: str
     plan_name: Optional[str] = "Standard Pro"
+
+    @field_validator("admin_password")
+    @classmethod
+    def validate_admin_password(cls, v: str) -> str:
+        if len(v) < 8:
+            raise ValueError("Parol kamida 8 ta belgidan iborat bo'lishi kerak")
+        if not any(c.isalpha() for c in v) or not any(c.isdigit() for c in v):
+            raise ValueError("Parolda kamida bitta harf va bitta raqam bo'lishi kerak")
+        return v
 
 class SchoolUpdateInput(BaseModel):
     name: Optional[str] = None
@@ -127,7 +136,7 @@ async def create_school(
             school_id=new_school.id,
             role="SCHOOL_ADMIN",
             email=adm_email,
-            password_hash=get_password_hash(payload.admin_password or "Admin123!"),
+            password_hash=get_password_hash(payload.admin_password),
             first_name=payload.admin_first_name or "Direktor",
             last_name=payload.admin_last_name or "Maktabov",
             is_active=True
