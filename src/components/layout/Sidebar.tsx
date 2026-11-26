@@ -52,7 +52,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ mobileOpen = false, onClose })
     ];
   } else if (isTeacher) {
     menuItems = [
-      { href: '/dashboard/timetable', label: 'Mening Dars Jadvalim', icon: CalendarDays },
+      { href: '/dashboard/my-timetable', label: 'Mening Dars Jadvalim', icon: CalendarDays },
     ];
   }
 

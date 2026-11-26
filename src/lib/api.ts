@@ -326,6 +326,12 @@ export const timetableApi = {
   },
   getJob: (jobId: string) =>
     executeRequest<TimetableJobStatusResponse>(`/timetable/jobs/${encodeURIComponent(jobId)}`),
+  getMy: async (term = 1): Promise<TimetableEntry[]> => {
+    const res = await executeRequest<PaginatedResponse<TimetableEntry> | TimetableEntry[]>(
+      `/timetable/my?term=${term}`
+    );
+    return extractDataArray<TimetableEntry>(res);
+  },
   getAll: async (term = 1): Promise<TimetableEntry[]> => {
     const res = await executeRequest<PaginatedResponse<TimetableEntry> | TimetableEntry[]>(
       `/timetable/all?term=${term}&per_page=3000`

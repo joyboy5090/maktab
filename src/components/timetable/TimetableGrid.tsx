@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import { useSchoolData } from '@/context/SchoolDataContext';
 import { useToast } from '@/context/ToastContext';
+import { useAuth } from '@/context/AuthContext';
 import { timetableApi } from '@/lib/api';
 
 export type DayOfWeek = 'Dushanba' | 'Seshanba' | 'Chorshanba' | 'Payshanba' | 'Juma' | 'Shanba';
@@ -51,6 +52,8 @@ const TIME_SLOTS = [
 export const TimetableGrid: React.FC<{ refreshKey?: number }> = ({ refreshKey }) => {
   const { classes } = useSchoolData();
   const { toast } = useToast();
+  const { user } = useAuth();
+  const isTeacher = user?.role === 'TEACHER';
   const [selectedClass, setSelectedClass] = useState<string>('5-A');
   const [hoveredCell, setHoveredCell] = useState<TimetableCell | null>(null);
   const [dbEntries, setDbEntries] = useState<TimetableCell[]>([]);
@@ -64,7 +67,7 @@ export const TimetableGrid: React.FC<{ refreshKey?: number }> = ({ refreshKey })
     const fetchTimetable = async () => {
       setIsLoading(true);
       try {
-        const data = await timetableApi.getAll(1);
+        const data = isTeacher ? await timetableApi.getMy(1) : await timetableApi.getAll(1);
         if (data && Array.isArray(data)) {
           const mapped: TimetableCell[] = data.map((item: any) => {
             const slot = TIME_SLOTS.find((s) => s.order === item.lesson_order) || {
@@ -97,19 +100,19 @@ export const TimetableGrid: React.FC<{ refreshKey?: number }> = ({ refreshKey })
     };
 
     fetchTimetable();
-  }, [refreshKey]);
+  }, [refreshKey, isTeacher]);
 
   // Standart birinchi sinfni tanlash
   useEffect(() => {
-    if (classes.length > 0 && !classes.some((c) => c.name === selectedClass)) {
+    if (!isTeacher && classes.length > 0 && !classes.some((c) => c.name === selectedClass)) {
       setSelectedClass(classes[0].name);
     }
-  }, [classes, selectedClass]);
+  }, [classes, selectedClass, isTeacher]);
 
-  // Tanlangan sinf darslari
+  // Tanlangan sinf yoki o'qituvchining barcha darslari
   const classLessons = useMemo(() => {
-    return dbEntries.filter((item) => item.className === selectedClass);
-  }, [dbEntries, selectedClass]);
+    return isTeacher ? dbEntries : dbEntries.filter((item) => item.className === selectedClass);
+  }, [dbEntries, selectedClass, isTeacher]);
 
   const getCellForSlot = (day: DayOfWeek, order: number): TimetableCell | undefined => {
     return classLessons.find((item) => item.day === day && item.lessonOrder === order);
@@ -339,20 +342,26 @@ export const TimetableGrid: React.FC<{ refreshKey?: number }> = ({ refreshKey })
       {/* Control Bar */}
       <div className="p-5 border-b border-gray-200 flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-gray-50/50">
         <div className="flex items-center gap-3">
-          <label className="text-xs font-bold text-gray-700 uppercase tracking-wider">
-            Sinfni tanlang:
-          </label>
-          <select
-            value={selectedClass}
-            onChange={(e) => setSelectedClass(e.target.value)}
-            className="bg-white border border-gray-300 text-gray-900 text-sm font-semibold rounded-xl focus:ring-2 focus:ring-[#1E40AF] px-3.5 py-2 outline-none shadow-sm"
-          >
-            {classes.map((c) => (
-              <option key={c.id} value={c.name}>
-                {c.name} sinf
-              </option>
-            ))}
-          </select>
+          {!isTeacher ? (
+            <>
+              <label className="text-xs font-bold text-gray-700 uppercase tracking-wider">
+                Sinfni tanlang:
+              </label>
+              <select
+                value={selectedClass}
+                onChange={(e) => setSelectedClass(e.target.value)}
+                className="bg-white border border-gray-300 text-gray-900 text-sm font-semibold rounded-xl focus:ring-2 focus:ring-[#1E40AF] px-3.5 py-2 outline-none shadow-sm"
+              >
+                {classes.map((c) => (
+                  <option key={c.id} value={c.name}>
+                    {c.name} sinf
+                  </option>
+                ))}
+              </select>
+            </>
+          ) : (
+            <span className="text-sm font-bold text-gray-900">Mening darslarim</span>
+          )}
 
           <span className="text-xs text-gray-500 font-medium ml-2">
             Haftalik darslar: <strong className="text-gray-900">{classLessons.length} ta</strong>
@@ -408,7 +417,9 @@ export const TimetableGrid: React.FC<{ refreshKey?: number }> = ({ refreshKey })
         <div className="p-4 bg-white border-b border-gray-100 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <span className="w-3 h-3 rounded-full bg-[#1E40AF]"></span>
-            <span className="text-sm font-bold text-gray-900">{selectedClass} sinf dars jadvali</span>
+            <span className="text-sm font-bold text-gray-900">
+              {isTeacher ? 'Mening haftalik dars jadvalim' : `${selectedClass} sinf dars jadvali`}
+            </span>
           </div>
           <span className="text-xs text-gray-400 font-medium">1-Chorak / 2026-2027 O'quv yili</span>
         </div>
@@ -439,19 +450,21 @@ export const TimetableGrid: React.FC<{ refreshKey?: number }> = ({ refreshKey })
                   return (
                     <td
                       key={day}
-                      onDragOver={(e) => e.preventDefault()}
-                      onDrop={() => handleDropOnSlot(day, slot.order)}
+                      onDragOver={isTeacher ? undefined : (e) => e.preventDefault()}
+                      onDrop={isTeacher ? undefined : () => handleDropOnSlot(day, slot.order)}
                       className="p-2 border-r border-gray-200 last:border-r-0 align-top relative"
                     >
                       {item ? (
                         <div
-                          draggable
-                          onDragStart={() => setDraggedCell(item)}
-                          onDragEnd={() => setDraggedCell(null)}
+                          draggable={!isTeacher}
+                          onDragStart={isTeacher ? undefined : () => setDraggedCell(item)}
+                          onDragEnd={isTeacher ? undefined : () => setDraggedCell(null)}
                           onMouseEnter={() => setHoveredCell(item)}
                           onMouseLeave={() => setHoveredCell(null)}
                           style={{ borderLeftColor: item.colorHex }}
-                          className={`h-24 p-2.5 rounded-xl bg-white border border-l-4 shadow-sm hover:shadow-md transition-all cursor-grab active:cursor-grabbing flex flex-col justify-between ${
+                          className={`h-24 p-2.5 rounded-xl bg-white border border-l-4 shadow-sm hover:shadow-md transition-all ${
+                            isTeacher ? '' : 'cursor-grab active:cursor-grabbing'
+                          } flex flex-col justify-between ${
                             item.isPinned ? 'border-amber-400 ring-1 ring-amber-200' : 'border-gray-200/80'
                           }`}
                         >
@@ -461,21 +474,23 @@ export const TimetableGrid: React.FC<{ refreshKey?: number }> = ({ refreshKey })
                                 {item.subjectName}
                               </span>
                               <div className="flex items-center gap-1 shrink-0">
-                                <button
-                                  type="button"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    handleTogglePin(item);
-                                  }}
-                                  title={item.isPinned ? "Qotirishni yechish" : "Darsni qotirish (Pin)"}
-                                  className={`p-0.5 rounded transition ${
-                                    item.isPinned
-                                      ? 'text-amber-600 bg-amber-50 hover:bg-amber-100'
-                                      : 'text-gray-300 hover:text-gray-600'
-                                  }`}
-                                >
-                                  {item.isPinned ? <Pin className="w-3 h-3" /> : <PinOff className="w-3 h-3" />}
-                                </button>
+                                {!isTeacher && (
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleTogglePin(item);
+                                    }}
+                                    title={item.isPinned ? "Qotirishni yechish" : "Darsni qotirish (Pin)"}
+                                    className={`p-0.5 rounded transition ${
+                                      item.isPinned
+                                        ? 'text-amber-600 bg-amber-50 hover:bg-amber-100'
+                                        : 'text-gray-300 hover:text-gray-600'
+                                    }`}
+                                  >
+                                    {item.isPinned ? <Pin className="w-3 h-3" /> : <PinOff className="w-3 h-3" />}
+                                  </button>
+                                )}
                                 <span
                                   style={{ color: item.colorHex }}
                                   className="text-[10px] font-mono font-bold"
@@ -519,11 +534,15 @@ export const TimetableGrid: React.FC<{ refreshKey?: number }> = ({ refreshKey })
         <div className="p-8 text-center bg-gray-50/50 border-t border-gray-100">
           <BookOpen className="w-8 h-8 text-gray-300 mx-auto mb-2" />
           <p className="text-sm font-semibold text-gray-700">
-            {selectedClass} sinfi uchun hali dars jadvali generatsiya qilinmagan
+            {isTeacher
+              ? "Sizga hozircha dars jadvali biriktirilmagan"
+              : `${selectedClass} sinfi uchun hali dars jadvali generatsiya qilinmagan`}
           </p>
-          <p className="text-xs text-gray-400 mt-0.5">
-            Yuqoridagi <strong>"Jadvalni Generatsiya Qilish"</strong> tugmasini bosib ziddiyatsiz jadval yarating
-          </p>
+          {!isTeacher && (
+            <p className="text-xs text-gray-400 mt-0.5">
+              Yuqoridagi <strong>"Jadvalni Generatsiya Qilish"</strong> tugmasini bosib ziddiyatsiz jadval yarating
+            </p>
+          )}
         </div>
       )}
     </div>

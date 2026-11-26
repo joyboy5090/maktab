@@ -6,6 +6,7 @@ import { StatCards } from '@/components/dashboard/StatCards';
 import { useSchoolData } from '@/context/SchoolDataContext';
 import { useAuth } from '@/context/AuthContext';
 import { SuperAdminSchoolsModule } from '@/components/schools/SuperAdminSchoolsModule';
+import { TimetableModule } from '@/components/timetable/TimetableModule';
 import {
   CalendarDays,
   Sparkles,
@@ -24,6 +25,11 @@ export default function DashboardOverviewPage() {
   // Super Admin kelsa — barcha maktablar boshqaruvi ochiladi
   if (user?.role === 'SUPER_ADMIN') {
     return <SuperAdminSchoolsModule />;
+  }
+
+  // O'qituvchi kelsa — faqat o'zining dars jadvali ochiladi
+  if (user?.role === 'TEACHER') {
+    return <TimetableModule />;
   }
 
   return (

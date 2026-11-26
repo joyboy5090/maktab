@@ -95,3 +95,103 @@ async def test_patch_timetable_entry_pin_and_conflict_409(async_client: AsyncCli
     )
     assert unpin_res.status_code == 200
     assert unpin_res.json()["is_pinned"] is False
+
+
+@pytest.mark.asyncio
+async def test_teacher_my_timetable_rbac_and_rls(async_client: AsyncClient, auth_headers: dict):
+    import uuid
+    from sqlalchemy import select, update, delete
+    from database.connection import AsyncSessionLocal
+    from database.models import Teacher, User
+    from core.security import get_password_hash
+
+    list_res = await async_client.get("/timetable/all?term=1&per_page=50", headers=auth_headers)
+    assert list_res.status_code == 200
+    items = list_res.json().get("data", [])
+    teacher_ids = list({x["teacher_id"] for x in items if x.get("teacher_id")})
+    assert len(teacher_ids) >= 2, "Test uchun kamida 2 ta o'qituvchi darsi kerak"
+
+    teacher_a_id = teacher_ids[0]
+    teacher_b_id = teacher_ids[1]
+    school_id = "94561d8a-2ca8-4bb2-9b94-e67a53fc472c"
+    other_school_id = str(uuid.uuid4())
+    user_a_id = str(uuid.uuid4())
+
+    async with AsyncSessionLocal() as db:
+        orig_user_id = (
+            await db.execute(select(Teacher.user_id).where(Teacher.id == teacher_a_id))
+        ).scalar_one_or_none()
+        user_a = User(
+            id=user_a_id,
+            school_id=school_id,
+            role="TEACHER",
+            email=f"teacher_{user_a_id[:8]}@maktab142.uz",
+            password_hash=get_password_hash("secret123"),
+            first_name="Test",
+            last_name="Teacher",
+        )
+        db.add(user_a)
+        await db.flush()
+        await db.execute(
+            update(Teacher).where(Teacher.id == teacher_a_id).values(user_id=user_a_id)
+        )
+        await db.commit()
+
+    try:
+        teacher_token = create_access_token(
+            subject=user_a_id,
+            school_id=school_id,
+            role="TEACHER",
+            email=f"teacher_{user_a_id[:8]}@maktab142.uz",
+        )
+        teacher_headers = {"Authorization": f"Bearer {teacher_token}"}
+
+        # 1. RBAC: TEACHER cannot access /timetable/all or /timetable/by-class/{id}
+        all_res = await async_client.get("/timetable/all?term=1", headers=teacher_headers)
+        assert all_res.status_code == 403
+
+        by_class_res = await async_client.get(
+            f"/timetable/by-class/{items[0]['class_id']}?term=1", headers=teacher_headers
+        )
+        assert by_class_res.status_code == 403
+
+        # 2. /timetable/my returns ONLY lessons assigned to teacher_a_id
+        my_res = await async_client.get("/timetable/my?term=1", headers=teacher_headers)
+        assert my_res.status_code == 200
+        my_items = my_res.json()
+        assert len(my_items) >= 1
+        assert all(entry["teacher_id"] == teacher_a_id for entry in my_items)
+        assert all(entry["teacher_id"] != teacher_b_id for entry in my_items)
+
+        # 3. Unlinked TEACHER gets empty list
+        unlinked_token = create_access_token(
+            subject=str(uuid.uuid4()),
+            school_id=school_id,
+            role="TEACHER",
+            email="unlinked@maktab142.uz",
+        )
+        unlinked_res = await async_client.get(
+            "/timetable/my?term=1", headers={"Authorization": f"Bearer {unlinked_token}"}
+        )
+        assert unlinked_res.status_code == 200
+        assert unlinked_res.json() == []
+
+        # 4. RLS / tenant isolation: same user_a_id with another school_id sees 0 rows
+        other_school_token = create_access_token(
+            subject=user_a_id,
+            school_id=other_school_id,
+            role="TEACHER",
+            email=f"teacher_{user_a_id[:8]}@other.uz",
+        )
+        rls_res = await async_client.get(
+            "/timetable/my?term=1", headers={"Authorization": f"Bearer {other_school_token}"}
+        )
+        assert rls_res.status_code == 200
+        assert rls_res.json() == []
+    finally:
+        async with AsyncSessionLocal() as db:
+            await db.execute(
+                update(Teacher).where(Teacher.id == teacher_a_id).values(user_id=orig_user_id)
+            )
+            await db.execute(delete(User).where(User.id == user_a_id))
+            await db.commit()

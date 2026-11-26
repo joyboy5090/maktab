@@ -102,6 +102,77 @@ async def get_timetable_job_status(
         "finished_at": job.finished_at,
     }
 
+def _serialize_timetable_rows(rows) -> List[Dict[str, Any]]:
+    return [
+        {
+            "id": row.TimetableEntry.id,
+            "term": row.TimetableEntry.term,
+            "day": row.TimetableEntry.day,
+            "lesson_order": row.TimetableEntry.lesson_order,
+            "class_id": row.TimetableEntry.class_id,
+            "class_name": row.class_name,
+            "subject_id": row.TimetableEntry.subject_id,
+            "subject_name": row.subject_name,
+            "subject_code": row.subject_code,
+            "color_hex": row.color_hex,
+            "teacher_id": row.TimetableEntry.teacher_id,
+            "teacher_name": row.teacher_name or "Biriktirilmagan",
+            "room_id": row.TimetableEntry.room_id,
+            "room_number": row.room_number or (f"{row.class_name} xona" if row.class_name else "Sinf xonasi"),
+            "is_pinned": row.TimetableEntry.is_pinned,
+        }
+        for row in rows
+    ]
+
+
+@router.get("/my")
+async def get_my_timetable(
+    term: int = 1,
+    db: AsyncSession = Depends(get_tenant_db),
+    current_user: CurrentUser = Depends(require_any_authenticated),
+):
+    """
+    O'qituvchining faqat o'ziga biriktirilgan (teachers.user_id == current_user.id) dars jadvali.
+    RLS (school_id) va user_id filtri bilan himoyalangan.
+    """
+    if not current_user.school_id:
+        return []
+
+    teacher_res = await db.execute(
+        select(Teacher.id).where(
+            Teacher.school_id == current_user.school_id,
+            Teacher.user_id == current_user.id,
+        )
+    )
+    teacher_ids = list(teacher_res.scalars().all())
+    if not teacher_ids:
+        return []
+
+    stmt = (
+        select(
+            TimetableEntry,
+            SchoolClass.name.label("class_name"),
+            Subject.name.label("subject_name"),
+            Subject.short_code.label("subject_code"),
+            Subject.color_hex.label("color_hex"),
+            Teacher.full_name.label("teacher_name"),
+            Room.room_number.label("room_number"),
+        )
+        .join(SchoolClass, TimetableEntry.class_id == SchoolClass.id)
+        .join(Subject, TimetableEntry.subject_id == Subject.id)
+        .outerjoin(Teacher, TimetableEntry.teacher_id == Teacher.id)
+        .outerjoin(Room, TimetableEntry.room_id == Room.id)
+        .where(
+            TimetableEntry.school_id == current_user.school_id,
+            TimetableEntry.term == term,
+            TimetableEntry.teacher_id.in_(teacher_ids),
+        )
+        .order_by(TimetableEntry.day, TimetableEntry.lesson_order)
+    )
+    rows = (await db.execute(stmt)).all()
+    return _serialize_timetable_rows(rows)
+
+
 @router.get("/all")
 async def get_all_timetables(
     term: Optional[int] = 1,
@@ -109,10 +180,10 @@ async def get_all_timetables(
     page: int = Query(1, ge=1, description="Sahifa raqami"),
     per_page: int = Query(3000, ge=1, le=10000, description="Har sahifadagi darslar soni"),
     db: AsyncSession = Depends(get_tenant_db),
-    current_user: CurrentUser = Depends(require_any_authenticated)
+    current_user: CurrentUser = Depends(require_school_admin)
 ):
     """
-    Maktabdagi barcha sinflarning dars jadvalini olish (cheksiz / to'liq).
+    Maktabdagi barcha sinflarning dars jadvalini olish (faqat adminlar uchun).
     """
     stmt = (
         select(
@@ -149,27 +220,7 @@ async def get_all_timetables(
     stmt = stmt.order_by(SchoolClass.name, TimetableEntry.day, TimetableEntry.lesson_order).offset((page - 1) * per_page).limit(per_page)
     result = await db.execute(stmt)
     rows = result.all()
-
-    items = [
-        {
-            "id": row.TimetableEntry.id,
-            "term": row.TimetableEntry.term,
-            "day": row.TimetableEntry.day,
-            "lesson_order": row.TimetableEntry.lesson_order,
-            "class_id": row.TimetableEntry.class_id,
-            "class_name": row.class_name,
-            "subject_id": row.TimetableEntry.subject_id,
-            "subject_name": row.subject_name,
-            "subject_code": row.subject_code,
-            "color_hex": row.color_hex,
-            "teacher_id": row.TimetableEntry.teacher_id,
-            "teacher_name": row.teacher_name or "Biriktirilmagan",
-            "room_id": row.TimetableEntry.room_id,
-            "room_number": row.room_number or (f"{row.class_name} xona" if row.class_name else "Sinf xonasi"),
-            "is_pinned": row.TimetableEntry.is_pinned,
-        }
-        for row in rows
-    ]
+    items = _serialize_timetable_rows(rows)
 
     return paginate_response(items, total, page, per_page)
 
@@ -178,7 +229,7 @@ async def get_timetable_by_class(
     class_id: str,
     term: int = 1,
     db: AsyncSession = Depends(get_tenant_db),
-    current_user: CurrentUser = Depends(require_any_authenticated)
+    current_user: CurrentUser = Depends(require_school_admin)
 ):
     """
     Berilgan sinf (ID yoki Nomi) va chorak bo'yicha haftalik dars jadvalini olish.
@@ -211,26 +262,7 @@ async def get_timetable_by_class(
     result = await db.execute(stmt)
     rows = result.all()
 
-    return [
-        {
-            "id": row.TimetableEntry.id,
-            "term": row.TimetableEntry.term,
-            "day": row.TimetableEntry.day,
-            "lesson_order": row.TimetableEntry.lesson_order,
-            "class_id": row.TimetableEntry.class_id,
-            "class_name": row.class_name,
-            "subject_id": row.TimetableEntry.subject_id,
-            "subject_name": row.subject_name,
-            "subject_code": row.subject_code,
-            "color_hex": row.color_hex,
-            "teacher_id": row.TimetableEntry.teacher_id,
-            "teacher_name": row.teacher_name or "Biriktirilmagan",
-            "room_id": row.TimetableEntry.room_id,
-            "room_number": row.room_number or (f"{row.class_name} xona" if row.class_name else "Sinf xonasi"),
-            "is_pinned": row.TimetableEntry.is_pinned,
-        }
-        for row in rows
-    ]
+    return _serialize_timetable_rows(rows)
 
 
 @router.patch("/entries/{entry_id}")
