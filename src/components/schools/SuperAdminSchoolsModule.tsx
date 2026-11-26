@@ -97,6 +97,8 @@ export const SuperAdminSchoolsModule: React.FC = () => {
   const [phone, setPhone] = useState('');
   const [address, setAddress] = useState('');
   const [adminName, setAdminName] = useState('Direktor');
+  const [adminPassword, setAdminPassword] = useState('');
+  const [createdPasswordNotice, setCreatedPasswordNotice] = useState<{ email: string; password: string } | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const fetchSchools = async () => {
@@ -123,7 +125,7 @@ export const SuperAdminSchoolsModule: React.FC = () => {
 
     setIsSubmitting(true);
     try {
-      await schoolsApi.create({
+      const payload: Record<string, any> = {
         name,
         slug,
         email,
@@ -131,8 +133,17 @@ export const SuperAdminSchoolsModule: React.FC = () => {
         address,
         admin_first_name: adminName,
         admin_email: email,
-        admin_password: 'Admin123!',
-      });
+      };
+      if (adminPassword.trim()) {
+        payload.admin_password = adminPassword.trim();
+      }
+      const res = await schoolsApi.create(payload);
+      if (res?.generated_admin_password) {
+        setCreatedPasswordNotice({
+          email,
+          password: res.generated_admin_password,
+        });
+      }
       await fetchSchools();
       setShowAddModal(false);
       setName('');
@@ -140,6 +151,7 @@ export const SuperAdminSchoolsModule: React.FC = () => {
       setEmail('');
       setPhone('');
       setAddress('');
+      setAdminPassword('');
     } catch (err: any) {
       alert(err.message || 'Xatolik yuz berdi');
     } finally {
@@ -186,6 +198,24 @@ export const SuperAdminSchoolsModule: React.FC = () => {
           </button>
         </div>
       </div>
+
+      {createdPasswordNotice && (
+        <div className="bg-emerald-50 border border-emerald-200 text-emerald-900 rounded-2xl p-4 flex items-center justify-between gap-4">
+          <div className="text-xs sm:text-sm">
+            Yangi maktab administratori (<strong>{createdPasswordNotice.email}</strong>) uchun bir martalik parol:{' '}
+            <code className="font-mono font-bold bg-white px-2 py-0.5 rounded border border-emerald-200">
+              {createdPasswordNotice.password}
+            </code>
+          </div>
+          <button
+            type="button"
+            onClick={() => setCreatedPasswordNotice(null)}
+            className="text-xs font-semibold text-emerald-700 hover:underline shrink-0"
+          >
+            Yopish
+          </button>
+        </div>
+      )}
 
       {/* Global Platforma Statistikasi */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
@@ -431,8 +461,20 @@ export const SuperAdminSchoolsModule: React.FC = () => {
                 />
               </div>
 
-              <div className="bg-purple-50 p-3 rounded-xl border border-purple-100 text-xs text-purple-900">
-                ✨ Yangi maktab uchun standart administrator paroli: <strong>Admin123!</strong> etib belgilanadi.
+              <div>
+                <label className="text-xs font-semibold text-gray-700 block mb-1">
+                  Administrator paroli <span className="text-gray-400 font-normal">(ixtiyoriy)</span>:
+                </label>
+                <input
+                  type="password"
+                  placeholder="Bo'sh qoldirilsa tasodifiy xavfsiz parol yaratiladi"
+                  value={adminPassword}
+                  onChange={(e) => setAdminPassword(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-xl text-xs font-semibold focus:ring-2 focus:ring-purple-600 outline-none"
+                />
+                <p className="text-[11px] text-gray-500 mt-1">
+                  Kamida 8 ta belgi, kamida 1 ta katta harf va 1 ta raqam. Bo&apos;sh qoldirilsa, bir martalik xavfsiz parol yaratiladi.
+                </p>
               </div>
 
               <div className="flex items-center justify-end gap-2 pt-3 border-t border-gray-100">

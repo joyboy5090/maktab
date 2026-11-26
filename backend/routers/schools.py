@@ -1,14 +1,33 @@
+import secrets
+import string
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from database.connection import get_db_session
 from database.models import School, Subscription, User, Teacher, SchoolClass
 from core.rbac import CurrentUser, get_current_user, require_super_admin
 from core.security import get_password_hash
+from schemas.schemas import validate_password_strength
 
 router = APIRouter(prefix="/schools", tags=["Maktablar Boshqaruvi (Super Admin)"])
+
+
+def _generate_strong_password(length: int = 14) -> str:
+    """Kriptografik jihatdan xavfsiz tasodifiy parol yaratadi."""
+    alphabet = string.ascii_letters + string.digits + "!@#$%"
+    required = [
+        secrets.choice(string.ascii_uppercase),
+        secrets.choice(string.ascii_lowercase),
+        secrets.choice(string.digits),
+        secrets.choice("!@#$%"),
+    ]
+    rest = [secrets.choice(alphabet) for _ in range(max(length - len(required), 4))]
+    chars = required + rest
+    secrets.SystemRandom().shuffle(chars)
+    return "".join(chars)
+
 
 class SchoolCreateInput(BaseModel):
     name: str
@@ -20,8 +39,15 @@ class SchoolCreateInput(BaseModel):
     admin_first_name: Optional[str] = "Direktor"
     admin_last_name: Optional[str] = "Maktabov"
     admin_email: Optional[str] = None
-    admin_password: Optional[str] = "Admin123!"
+    admin_password: Optional[str] = None
     plan_name: Optional[str] = "Standard Pro"
+
+    @field_validator("admin_password")
+    @classmethod
+    def check_admin_password(cls, v: Optional[str]) -> Optional[str]:
+        if v is None or v == "":
+            return None
+        return validate_password_strength(v)
 
 class SchoolUpdateInput(BaseModel):
     name: Optional[str] = None
@@ -121,13 +147,18 @@ async def create_school(
 
     # Admin user yaratish
     adm_email = payload.admin_email or payload.email
+    generated_admin_password: Optional[str] = None
     user_exists = await db.scalar(select(User).where(User.email == adm_email))
     if not user_exists:
+        raw_password = payload.admin_password
+        if not raw_password:
+            generated_admin_password = _generate_strong_password()
+            raw_password = generated_admin_password
         admin_user = User(
             school_id=new_school.id,
             role="SCHOOL_ADMIN",
             email=adm_email,
-            password_hash=get_password_hash(payload.admin_password or "Admin123!"),
+            password_hash=get_password_hash(raw_password),
             first_name=payload.admin_first_name or "Direktor",
             last_name=payload.admin_last_name or "Maktabov",
             is_active=True
@@ -145,7 +176,7 @@ async def create_school(
     except Exception as e:
         print(f"Yangi maktab fanlari avtomatik yaratilishida ogohlantirish: {e}")
 
-    return {
+    response_payload = {
         "success": True,
         "message": f"{new_school.name} muvaffaqiyatli ro'yxatdan o'tkazildi",
         "school": {
@@ -155,6 +186,9 @@ async def create_school(
             "email": new_school.email
         }
     }
+    if generated_admin_password is not None:
+        response_payload["generated_admin_password"] = generated_admin_password
+    return response_payload
 
 @router.put("/{school_id}", response_model=dict)
 async def update_school(

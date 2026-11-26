@@ -339,3 +339,21 @@ async def test_login_with_72_and_80_byte_passwords(async_client: AsyncClient):
         assert "access_token" in res_72.json()
     finally:
         app.dependency_overrides.pop(get_db_session, None)
+
+
+def test_school_create_no_hardcoded_admin_password():
+    from routers.schools import SchoolCreateInput, _generate_strong_password
+    from schemas.schemas import validate_password_strength
+
+    # Default admin_password must be None (no hardcoded "Admin123!")
+    item = SchoolCreateInput(name="Test", slug="test-school", email="a@b.uz")
+    assert item.admin_password is None
+
+    # Weak password must be rejected
+    with pytest.raises(ValidationError):
+        SchoolCreateInput(name="Test", slug="test-school", email="a@b.uz", admin_password="weak")
+
+    # Generated one-time password must satisfy strength policy
+    generated = _generate_strong_password()
+    assert len(generated) >= 12
+    assert validate_password_strength(generated) == generated

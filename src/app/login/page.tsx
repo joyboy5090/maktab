@@ -157,12 +157,10 @@ export default function LoginPage() {
             </button>
           </form>
 
-          {/* Demo tip for user convenience */}
           <div className="mt-6 pt-5 border-t border-gray-100 text-center">
-            <p className="text-xs text-gray-500">
-              Standart Administrator: <span className="font-semibold text-gray-700">admin@maktab142.uz</span>
+            <p className="text-xs text-gray-400">
+              Kirish ma&apos;lumotlarini maktab administratoridan oling.
             </p>
-            <p className="text-[11px] text-gray-400 mt-0.5">Parol: <span className="font-mono font-medium">Admin123!</span></p>
           </div>
         </div>
 
