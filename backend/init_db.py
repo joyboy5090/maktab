@@ -1,31 +1,41 @@
 import os
-import sys
+import logging
 import asyncio
 from dotenv import load_dotenv
 
 # Env yuklash
 load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 
-from core.config import settings, get_async_db_url
+from core.config import get_async_db_url
+from schemas.schemas import validate_password_strength
 
-raw_url = os.getenv("DATABASE_URL", "")
-if not raw_url:
-    print("XATO: DATABASE_URL topilmadi!")
-    sys.exit(1)
+logger = logging.getLogger("init_db")
+if not logger.handlers:
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s")
 
-async_url = get_async_db_url(raw_url)
+raw_alembic_url = os.getenv("ALEMBIC_DATABASE_URL", "").strip()
+async_url = get_async_db_url(raw_alembic_url) if raw_alembic_url else "postgresql+asyncpg://localhost/placeholder"
 
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
-from sqlalchemy import select
+from sqlalchemy import select, event, text
 from database.models import (
-    School, User, Teacher, Room, SchoolClass, Subject, ClassSubjectAllocation
+    School, User, Teacher, Room, SchoolClass, Subject
 )
 
 engine = create_async_engine(async_url, echo=False)
-AsyncSessionLocal = async_sessionmaker(bind=engine, expire_on_commit=False)
+AsyncSessionLocal = async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
 
 async def init():
+    if not os.getenv("ALEMBIC_DATABASE_URL", "").strip() and AsyncSessionLocal.kw.get("bind") is engine:
+        # Agar testlar AsyncSessionLocal ni mock qilmagan bo'lsa, ALEMBIC_DATABASE_URL majburiy
+        if not raw_alembic_url:
+            raise RuntimeError("XATO: ALEMBIC_DATABASE_URL (owner rol) env o'zgaruvchisi belgilanmagan!")
+
     async with AsyncSessionLocal() as session:
+        if isinstance(session, AsyncSession):
+            @event.listens_for(session.sync_session, "after_begin")
+            def _set_owner_bypass(sync_sess, transaction, connection):
+                connection.execute(text("SELECT set_config('app.is_super_admin', 'on', true)"))
         # Tekshiramiz: maktab bormi?
         res = await session.execute(select(School).limit(1))
         existing_school = res.scalar_one_or_none()
@@ -56,6 +66,7 @@ async def init():
         admin_password = os.getenv("DEFAULT_ADMIN_PASSWORD", "")
         if not admin_email or not admin_password:
             raise RuntimeError("XATO: DEFAULT_ADMIN_EMAIL va DEFAULT_ADMIN_PASSWORD env o'zgaruvchilari belgilanmagan!")
+        validate_password_strength(admin_password)
 
         u_res = await session.execute(select(User).where(User.email == admin_email))
         admin_user = u_res.scalar_one_or_none()
@@ -72,9 +83,9 @@ async def init():
             )
             session.add(admin_user)
             await session.commit()
-            print(f"   ✓ Admin foydalanuvchi yaratildi: {admin_email}")
+            logger.info("Admin foydalanuvchi yaratildi: %s", admin_email)
         else:
-            print(f"   ✓ Admin foydalanuvchi allaqachon mavjud: {admin_email}")
+            logger.info("Admin foydalanuvchi allaqachon mavjud, parol o'zgartirilmadi: %s", admin_email)
 
         # 3. Fanlar
         sub_res = await session.execute(select(Subject).where(Subject.school_id == school_id).limit(1))
