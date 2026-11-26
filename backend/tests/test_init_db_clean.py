@@ -1,4 +1,5 @@
 import os
+import sys
 import uuid
 import subprocess
 import urllib.parse
@@ -16,6 +17,9 @@ def _get_test_db_urls(test_db_name: str):
     from dotenv import load_dotenv
     load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
     raw = os.getenv("ALEMBIC_DATABASE_URL") or os.getenv("DATABASE_URL", "")
+    app_password = os.getenv("MAKTAB_APP_PASSWORD", "").strip()
+    if not app_password:
+        raise RuntimeError("MAKTAB_APP_PASSWORD env o'zgaruvchisi belgilanmagan!")
     parsed = urllib.parse.urlsplit(raw)
     admin_path = parsed.path or "/postgres"
     admin_url = urllib.parse.urlunsplit(("postgresql", parsed.netloc, admin_path, parsed.query, ""))
@@ -23,17 +27,17 @@ def _get_test_db_urls(test_db_name: str):
         urllib.parse.urlunsplit(("postgresql+asyncpg", parsed.netloc, f"/{test_db_name}", parsed.query, ""))
     )
     host_port = parsed.hostname + (f":{parsed.port}" if parsed.port else "")
-    app_netloc = f"maktab_app:maktab_app_secret@{host_port}"
+    app_netloc = f"maktab_app:{urllib.parse.quote(app_password, safe='')}@{host_port}"
     app_async_url = get_async_db_url(
         urllib.parse.urlunsplit(("postgresql+asyncpg", app_netloc, f"/{test_db_name}", parsed.query, ""))
     )
-    return admin_url, owner_async_url, app_async_url
+    return admin_url, owner_async_url, app_async_url, app_password
 
 
 @pytest.mark.asyncio
 async def test_clean_db_alembic_init_db_and_admin_login(monkeypatch):
     test_db_name = f"maktab_init_test_{uuid.uuid4().hex[:8]}"
-    admin_url, owner_async_url, app_async_url = _get_test_db_urls(test_db_name)
+    admin_url, owner_async_url, app_async_url, app_password = _get_test_db_urls(test_db_name)
     backend_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
     conn = await asyncpg.connect(admin_url)
@@ -46,6 +50,7 @@ async def test_clean_db_alembic_init_db_and_admin_login(monkeypatch):
     env = os.environ.copy()
     env["ALEMBIC_DATABASE_URL"] = owner_async_url
     env["DATABASE_URL"] = app_async_url
+    env["MAKTAB_APP_PASSWORD"] = app_password
     env["DEFAULT_ADMIN_EMAIL"] = "clean_admin@maktab.uz"
     env["DEFAULT_ADMIN_PASSWORD"] = "CleanAdmin123!"
 
@@ -56,7 +61,7 @@ async def test_clean_db_alembic_init_db_and_admin_login(monkeypatch):
 
     try:
         up_res = subprocess.run(
-            ["python", "-m", "alembic", "upgrade", "head"],
+            [sys.executable, "-m", "alembic", "upgrade", "head"],
             cwd=backend_dir,
             env=env,
             capture_output=True,
@@ -65,7 +70,7 @@ async def test_clean_db_alembic_init_db_and_admin_login(monkeypatch):
         assert up_res.returncode == 0, f"alembic upgrade head failed: {up_res.stderr}"
 
         init_res = subprocess.run(
-            ["python", "init_db.py"],
+            [sys.executable, "init_db.py"],
             cwd=backend_dir,
             env=env,
             capture_output=True,
@@ -75,7 +80,7 @@ async def test_clean_db_alembic_init_db_and_admin_login(monkeypatch):
 
         # Idempotent re-run must not fail or overwrite existing admin password
         init_res_2 = subprocess.run(
-            ["python", "init_db.py"],
+            [sys.executable, "init_db.py"],
             cwd=backend_dir,
             env=env,
             capture_output=True,

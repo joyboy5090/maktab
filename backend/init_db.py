@@ -193,7 +193,7 @@ async def init():
         else:
             print("   ✓ Sinflar allaqachon mavjud.")
 
-    print("\n🎉 TABRIKLAYMIZ! Barcha jadvallar va boshlang'ich ma'lumotlar Neon PostgreSQL bazasida muvaffaqiyatli yaratildi!")
+    print("\n🎉 TABRIKLAYMIZ! Barcha jadvallar va boshlang'ich ma'lumotlar PostgreSQL bazasida muvaffaqiyatli yaratildi!")
 
 if __name__ == "__main__":
     asyncio.run(init())

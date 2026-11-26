@@ -333,10 +333,7 @@ class TimetableService:
             @event.listens_for(db.sync_session, "after_begin")
             def _set_ctx(sync_sess, transaction, connection):
                 connection.execute(
-                    text(
-                        "SELECT set_config('app.is_super_admin', 'off', true), "
-                        "set_config('app.current_school_id', :sid, true)"
-                    ),
+                    text("SELECT set_config('app.current_school_id', :sid, true)"),
                     {"sid": str(school_id)},
                 )
 

@@ -5,6 +5,7 @@ Revises: e967abdda4dc
 Create Date: 2026-11-26 00:08:00.000000
 
 """
+import os
 from typing import Sequence, Union
 from alembic import op
 
@@ -32,13 +33,23 @@ TENANT_TABLES = [
 
 def upgrade() -> None:
     """Enable Row-Level Security (RLS) on all tenant tables and configure non-owner maktab_app role."""
+    app_password = os.getenv("MAKTAB_APP_PASSWORD", "").strip()
+    if not app_password:
+        raise RuntimeError(
+            "MAKTAB_APP_PASSWORD env o'zgaruvchisi belgilanmagan! "
+            "maktab_app roli uchun parolni env da bering."
+        )
+    escaped_pw = app_password.replace("'", "''")
+
     op.execute(
-        """
+        f"""
         DO $$
         BEGIN
             IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'maktab_app') THEN
-                CREATE ROLE maktab_app WITH LOGIN PASSWORD 'maktab_app_secret'
+                CREATE ROLE maktab_app WITH LOGIN PASSWORD '{escaped_pw}'
                     NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS;
+            ELSE
+                ALTER ROLE maktab_app WITH PASSWORD '{escaped_pw}';
             END IF;
         END $$;
         """

@@ -1,4 +1,5 @@
 import os
+import sys
 import uuid
 import subprocess
 import urllib.parse
@@ -11,13 +12,17 @@ from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sess
 import database.connection as db_conn
 from core.config import get_async_db_url
 from core.rbac import CurrentUser
-from database.models import School, Teacher
+from database.models import School, Teacher, TimetableJob
+from services.worker import process_pending_jobs_once
 
 
 def _get_db_urls(test_db_name: str):
     from dotenv import load_dotenv
     load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
     raw = os.getenv("ALEMBIC_DATABASE_URL") or os.getenv("DATABASE_URL", "")
+    app_password = os.getenv("MAKTAB_APP_PASSWORD", "").strip()
+    if not app_password:
+        raise RuntimeError("MAKTAB_APP_PASSWORD env o'zgaruvchisi belgilanmagan!")
     parsed = urllib.parse.urlsplit(raw)
     admin_path = parsed.path or "/postgres"
     admin_url = urllib.parse.urlunsplit(("postgresql", parsed.netloc, admin_path, parsed.query, ""))
@@ -25,17 +30,17 @@ def _get_db_urls(test_db_name: str):
         urllib.parse.urlunsplit(("postgresql+asyncpg", parsed.netloc, f"/{test_db_name}", parsed.query, ""))
     )
     host_port = parsed.hostname + (f":{parsed.port}" if parsed.port else "")
-    app_netloc = f"maktab_app:maktab_app_secret@{host_port}"
+    app_netloc = f"maktab_app:{urllib.parse.quote(app_password, safe='')}@{host_port}"
     app_async_url = get_async_db_url(
         urllib.parse.urlunsplit(("postgresql+asyncpg", app_netloc, f"/{test_db_name}", parsed.query, ""))
     )
-    return admin_url, owner_async_url, app_async_url
+    return admin_url, owner_async_url, app_async_url, app_password
 
 
 @pytest.mark.asyncio
 async def test_rls_tenant_isolation_with_real_postgres(monkeypatch):
     test_db_name = f"maktab_rls_test_{uuid.uuid4().hex[:8]}"
-    admin_url, owner_async_url, app_async_url = _get_db_urls(test_db_name)
+    admin_url, owner_async_url, app_async_url, app_password = _get_db_urls(test_db_name)
 
     # 1. Create clean DB and run Alembic migrations (including RLS + maktab_app role)
     conn = await asyncpg.connect(admin_url)
@@ -49,9 +54,10 @@ async def test_rls_tenant_isolation_with_real_postgres(monkeypatch):
     env = os.environ.copy()
     env["ALEMBIC_DATABASE_URL"] = owner_async_url
     env["DATABASE_URL"] = app_async_url
+    env["MAKTAB_APP_PASSWORD"] = app_password
 
     up_res = subprocess.run(
-        ["python", "-m", "alembic", "upgrade", "head"],
+        [sys.executable, "-m", "alembic", "upgrade", "head"],
         cwd=backend_dir,
         env=env,
         capture_output=True,
@@ -132,13 +138,34 @@ async def test_rls_tenant_isolation_with_real_postgres(monkeypatch):
         finally:
             await gen_sa.aclose()
 
+        # 6. Verify worker polls pending job via SuperAsyncSessionLocal, maktab_app without context sees 0 rows, and worker updates status
+        job_id = str(uuid.uuid4())
+        async with OwnerSession() as s:
+            s.add(TimetableJob(id=job_id, school_id=school_a_id, term=1, status="pending", progress=0))
+            await s.commit()
+
+        async with AppSession() as s_no_ctx:
+            hidden_job = (
+                await s_no_ctx.execute(select(TimetableJob).where(TimetableJob.id == job_id))
+            ).scalar_one_or_none()
+            assert hidden_job is None
+
+        processed_count = await process_pending_jobs_once()
+        assert processed_count >= 1
+
+        async with OwnerSession() as s:
+            updated_job = await s.get(TimetableJob, job_id)
+            assert updated_job is not None
+            assert updated_job.status in ("done", "failed")
+            assert updated_job.status != "pending"
+
     finally:
         await owner_engine.dispose()
         await app_engine.dispose()
 
         # Verify downgrade base works cleanly on RLS migration too
         down_res = subprocess.run(
-            ["python", "-m", "alembic", "downgrade", "base"],
+            [sys.executable, "-m", "alembic", "downgrade", "base"],
             cwd=backend_dir,
             env=env,
             capture_output=True,
