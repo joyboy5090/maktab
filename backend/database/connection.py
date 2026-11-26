@@ -22,15 +22,35 @@ AsyncSessionLocal = async_sessionmaker(
     autoflush=False
 )
 
+super_engine = (
+    create_async_engine(
+        settings.ALEMBIC_DATABASE_URL,
+        echo=False,
+        future=True,
+        pool_size=5,
+        max_overflow=2,
+        pool_pre_ping=True,
+    )
+    if settings.ALEMBIC_DATABASE_URL
+    else engine
+)
+
+SuperAsyncSessionLocal = (
+    async_sessionmaker(
+        bind=super_engine,
+        class_=AsyncSession,
+        expire_on_commit=False,
+        autoflush=False,
+    )
+    if settings.ALEMBIC_DATABASE_URL
+    else AsyncSessionLocal
+)
+
 Base = declarative_base()
 
 async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
-    """Oddiy DB sessiya (auth yoki super-admin operatsiyalari uchun)"""
-    async with AsyncSessionLocal() as session:
-        @event.listens_for(session.sync_session, "after_begin")
-        def _set_super_admin_ctx(sync_sess, transaction, connection):
-            connection.execute(text("SELECT set_config('app.is_super_admin', 'on', true)"))
-
+    """Server-side super/owner DB sessiyasi (auth va SUPER_ADMIN operatsiyalari uchun, GUC ishlatmaydi)."""
+    async with SuperAsyncSessionLocal() as session:
         try:
             yield session
             await session.commit()
@@ -45,21 +65,29 @@ async def get_tenant_db(
 ) -> AsyncGenerator[AsyncSession, None]:
     """
     Multi-tenant RLS sessiyasi:
-    Har bir tranzaksiya boshida (after_begin, jumladan commitdan keyin ham)
-    PostgreSQL ga app.current_school_id va app.is_super_admin ni uzatadi.
+    - SUPER_ADMIN uchun server tomonidan SuperAsyncSessionLocal (owner/maktab_super) tanlanadi.
+    - Oddiy tenantlar uchun AsyncSessionLocal (maktab_app) va faqat app.current_school_id o'rnatiladi.
     """
-    is_super_admin = "on" if current_user.role == "SUPER_ADMIN" else "off"
+    if current_user.role == "SUPER_ADMIN":
+        async with SuperAsyncSessionLocal() as session:
+            try:
+                yield session
+                await session.commit()
+            except Exception:
+                await session.rollback()
+                raise
+            finally:
+                await session.close()
+        return
+
     school_id_str = str(current_user.school_id) if current_user.school_id else ""
 
     async with AsyncSessionLocal() as session:
         @event.listens_for(session.sync_session, "after_begin")
         def _set_tenant_ctx(sync_sess, transaction, connection):
             connection.execute(
-                text(
-                    "SELECT set_config('app.is_super_admin', :sa, true), "
-                    "set_config('app.current_school_id', :sid, true)"
-                ),
-                {"sa": is_super_admin, "sid": school_id_str}
+                text("SELECT set_config('app.current_school_id', :sid, true)"),
+                {"sid": school_id_str}
             )
 
         try:

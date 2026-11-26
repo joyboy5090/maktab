@@ -17,7 +17,7 @@ raw_alembic_url = os.getenv("ALEMBIC_DATABASE_URL", "").strip()
 async_url = get_async_db_url(raw_alembic_url) if raw_alembic_url else "postgresql+asyncpg://localhost/placeholder"
 
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
-from sqlalchemy import select, event, text
+from sqlalchemy import select
 from database.models import (
     School, User, Teacher, Room, SchoolClass, Subject
 )
@@ -32,10 +32,6 @@ async def init():
             raise RuntimeError("XATO: ALEMBIC_DATABASE_URL (owner rol) env o'zgaruvchisi belgilanmagan!")
 
     async with AsyncSessionLocal() as session:
-        if isinstance(session, AsyncSession):
-            @event.listens_for(session.sync_session, "after_begin")
-            def _set_owner_bypass(sync_sess, transaction, connection):
-                connection.execute(text("SELECT set_config('app.is_super_admin', 'on', true)"))
         # Tekshiramiz: maktab bormi?
         res = await session.execute(select(School).limit(1))
         existing_school = res.scalar_one_or_none()

@@ -1,4 +1,5 @@
 import os
+import uuid
 import subprocess
 import urllib.parse
 import pytest
@@ -13,29 +14,34 @@ from core.rbac import CurrentUser
 from database.models import School, Teacher
 
 
-def _get_db_urls():
+def _get_db_urls(test_db_name: str):
     from dotenv import load_dotenv
     load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
-    raw = os.getenv("DATABASE_URL", "")
+    raw = os.getenv("ALEMBIC_DATABASE_URL") or os.getenv("DATABASE_URL", "")
     parsed = urllib.parse.urlsplit(raw)
-    admin_url = urllib.parse.urlunsplit(("postgresql", parsed.netloc, "/neondb", parsed.query, ""))
-    owner_async_url = get_async_db_url(urllib.parse.urlunsplit(("postgresql+asyncpg", parsed.netloc, "/maktab_rls_test", parsed.query, "")))
-    # Non-owner maktab_app role (NOBYPASSRLS)
+    admin_path = parsed.path or "/postgres"
+    admin_url = urllib.parse.urlunsplit(("postgresql", parsed.netloc, admin_path, parsed.query, ""))
+    owner_async_url = get_async_db_url(
+        urllib.parse.urlunsplit(("postgresql+asyncpg", parsed.netloc, f"/{test_db_name}", parsed.query, ""))
+    )
     host_port = parsed.hostname + (f":{parsed.port}" if parsed.port else "")
     app_netloc = f"maktab_app:maktab_app_secret@{host_port}"
-    app_async_url = get_async_db_url(urllib.parse.urlunsplit(("postgresql+asyncpg", app_netloc, "/maktab_rls_test", parsed.query, "")))
+    app_async_url = get_async_db_url(
+        urllib.parse.urlunsplit(("postgresql+asyncpg", app_netloc, f"/{test_db_name}", parsed.query, ""))
+    )
     return admin_url, owner_async_url, app_async_url
 
 
 @pytest.mark.asyncio
 async def test_rls_tenant_isolation_with_real_postgres(monkeypatch):
-    admin_url, owner_async_url, app_async_url = _get_db_urls()
+    test_db_name = f"maktab_rls_test_{uuid.uuid4().hex[:8]}"
+    admin_url, owner_async_url, app_async_url = _get_db_urls(test_db_name)
 
     # 1. Create clean DB and run Alembic migrations (including RLS + maktab_app role)
     conn = await asyncpg.connect(admin_url)
     try:
-        await conn.execute("DROP DATABASE IF EXISTS maktab_rls_test")
-        await conn.execute("CREATE DATABASE maktab_rls_test")
+        await conn.execute(f"DROP DATABASE IF EXISTS {test_db_name}")
+        await conn.execute(f"CREATE DATABASE {test_db_name}")
     finally:
         await conn.close()
 
@@ -58,13 +64,13 @@ async def test_rls_tenant_isolation_with_real_postgres(monkeypatch):
     OwnerSession = async_sessionmaker(bind=owner_engine, class_=AsyncSession, expire_on_commit=False)
     AppSession = async_sessionmaker(bind=app_engine, class_=AsyncSession, expire_on_commit=False)
 
-    # Patch connection.AsyncSessionLocal so get_tenant_db uses non-owner maktab_app role
+    # Patch connection.AsyncSessionLocal (maktab_app) and SuperAsyncSessionLocal (owner/maktab_super)
     monkeypatch.setattr(db_conn, "AsyncSessionLocal", AppSession)
+    monkeypatch.setattr(db_conn, "SuperAsyncSessionLocal", OwnerSession)
 
     try:
-        # 2. Seed School A + Teacher A, School B + Teacher B (as owner / super admin)
+        # 2. Seed School A + Teacher A, School B + Teacher B (as owner / super role, without any GUC)
         async with OwnerSession() as s:
-            await s.execute(text("SELECT set_config('app.is_super_admin', 'on', true)"))
             school_a = School(name="Maktab A", slug="maktab-a-rls", email="a@maktab.uz")
             school_b = School(name="Maktab B", slug="maktab-b-rls", email="b@maktab.uz")
             s.add_all([school_a, school_b])
@@ -109,6 +115,11 @@ async def test_rls_tenant_isolation_with_real_postgres(monkeypatch):
             with pytest.raises(ProgrammingError):
                 await db_a.flush()
             await db_a.rollback()
+
+            # GUC escalation attempt: SET app.is_super_admin = 'on' in maktab_app MUST NOT leak School B
+            await db_a.execute(text("SET app.is_super_admin = 'on'"))
+            after_guc_teachers = (await db_a.execute(select(Teacher))).scalars().all()
+            assert [t.id for t in after_guc_teachers] == [teacher_a_id]
         finally:
             await gen_a.aclose()
 
@@ -137,6 +148,6 @@ async def test_rls_tenant_isolation_with_real_postgres(monkeypatch):
 
         conn = await asyncpg.connect(admin_url)
         try:
-            await conn.execute("DROP DATABASE IF EXISTS maktab_rls_test")
+            await conn.execute(f"DROP DATABASE IF EXISTS {test_db_name}")
         finally:
             await conn.close()

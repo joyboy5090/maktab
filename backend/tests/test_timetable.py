@@ -54,104 +54,137 @@ async def test_timetable_async_job_flow_and_concurrency_guard(async_client: Asyn
 
 
 @pytest.mark.asyncio
-async def test_patch_timetable_entry_pin_and_conflict_409(async_client: AsyncClient, auth_headers: dict):
-    list_res = await async_client.get("/timetable/all?term=1&per_page=50", headers=auth_headers)
-    assert list_res.status_code == 200
-    items = list_res.json().get("data", [])
-    assert len(items) >= 2
-
-    first = items[0]
-    same_class_other = next((x for x in items[1:] if x["class_id"] == first["class_id"]), None)
-    assert same_class_other is not None
-
-    # 1. Pin first entry
-    pin_res = await async_client.patch(
-        f"/timetable/entries/{first['id']}",
-        headers=auth_headers,
-        json={"is_pinned": True},
-    )
-    assert pin_res.status_code == 200
-    assert pin_res.json()["is_pinned"] is True
-
-    # 2. Try moving first entry onto same_class_other's slot -> must return 409 Conflict
-    conflict_res = await async_client.patch(
-        f"/timetable/entries/{first['id']}",
-        headers=auth_headers,
-        json={
-            "day": same_class_other["day"],
-            "lesson_order": same_class_other["lesson_order"],
-        },
-    )
-    assert conflict_res.status_code == 409
-    err_data = conflict_res.json()
-    msg = err_data.get("detail") or err_data.get("error", {}).get("message", "")
-    assert "To'qnashuv" in msg
-
-    # 3. Unpin back to clean state
-    unpin_res = await async_client.patch(
-        f"/timetable/entries/{first['id']}",
-        headers=auth_headers,
-        json={"is_pinned": False},
-    )
-    assert unpin_res.status_code == 200
-    assert unpin_res.json()["is_pinned"] is False
-
-
-@pytest.mark.asyncio
-async def test_teacher_my_timetable_rbac_and_rls(async_client: AsyncClient, auth_headers: dict):
+async def test_patch_timetable_entry_pin_and_conflict_409(async_client: AsyncClient, seeded_school_and_admin: dict):
     import uuid
-    from sqlalchemy import select, update, delete
-    from database.connection import AsyncSessionLocal
-    from database.models import Teacher, User
-    from core.security import get_password_hash
+    from sqlalchemy import delete
+    from database.connection import SuperAsyncSessionLocal
+    from database.models import SchoolClass, Subject, Teacher, Room, TimetableEntry
 
-    list_res = await async_client.get("/timetable/all?term=1&per_page=50", headers=auth_headers)
-    assert list_res.status_code == 200
-    items = list_res.json().get("data", [])
-    teacher_ids = list({x["teacher_id"] for x in items if x.get("teacher_id")})
-    assert len(teacher_ids) >= 2, "Test uchun kamida 2 ta o'qituvchi darsi kerak"
+    school_id = seeded_school_and_admin["school_id"]
+    headers = seeded_school_and_admin["headers"]
+    cls_id = str(uuid.uuid4())
+    subj_id = str(uuid.uuid4())
+    tch_id = str(uuid.uuid4())
+    room_id = str(uuid.uuid4())
+    e1_id = str(uuid.uuid4())
+    e2_id = str(uuid.uuid4())
 
-    teacher_a_id = teacher_ids[0]
-    teacher_b_id = teacher_ids[1]
-    school_id = "94561d8a-2ca8-4bb2-9b94-e67a53fc472c"
-    other_school_id = str(uuid.uuid4())
-    user_a_id = str(uuid.uuid4())
-
-    async with AsyncSessionLocal() as db:
-        orig_user_id = (
-            await db.execute(select(Teacher.user_id).where(Teacher.id == teacher_a_id))
-        ).scalar_one_or_none()
-        user_a = User(
-            id=user_a_id,
-            school_id=school_id,
-            role="TEACHER",
-            email=f"teacher_{user_a_id[:8]}@maktab142.uz",
-            password_hash=get_password_hash("secret123"),
-            first_name="Test",
-            last_name="Teacher",
-        )
-        db.add(user_a)
+    async with SuperAsyncSessionLocal() as db:
+        db.add_all([
+            SchoolClass(id=cls_id, school_id=school_id, name=f"5-T-{cls_id[:4]}", grade_level=5, student_count=25, shift="MORNING"),
+            Subject(id=subj_id, school_id=school_id, name="Matematika", short_code=f"M{subj_id[:4]}", required_room_type="GENERAL"),
+            Teacher(id=tch_id, school_id=school_id, full_name="Patch Teacher", primary_subject="Matematika"),
+            Room(id=room_id, school_id=school_id, room_number=f"R-{room_id[:4]}", capacity=30, room_type="GENERAL"),
+        ])
         await db.flush()
-        await db.execute(
-            update(Teacher).where(Teacher.id == teacher_a_id).values(user_id=user_a_id)
-        )
+        db.add_all([
+            TimetableEntry(id=e1_id, school_id=school_id, term=1, day="Dushanba", lesson_order=1, class_id=cls_id, subject_id=subj_id, teacher_id=tch_id, room_id=room_id),
+            TimetableEntry(id=e2_id, school_id=school_id, term=1, day="Dushanba", lesson_order=2, class_id=cls_id, subject_id=subj_id, teacher_id=tch_id, room_id=room_id),
+        ])
         await db.commit()
 
     try:
-        teacher_token = create_access_token(
-            subject=user_a_id,
-            school_id=school_id,
-            role="TEACHER",
-            email=f"teacher_{user_a_id[:8]}@maktab142.uz",
+        # 1. Pin first entry
+        pin_res = await async_client.patch(
+            f"/timetable/entries/{e1_id}",
+            headers=headers,
+            json={"is_pinned": True},
         )
-        teacher_headers = {"Authorization": f"Bearer {teacher_token}"}
+        assert pin_res.status_code == 200
+        assert pin_res.json()["is_pinned"] is True
+
+        # 2. Try moving first entry onto e2's slot -> must return 409 Conflict
+        conflict_res = await async_client.patch(
+            f"/timetable/entries/{e1_id}",
+            headers=headers,
+            json={"day": "Dushanba", "lesson_order": 2},
+        )
+        assert conflict_res.status_code == 409
+        err_data = conflict_res.json()
+        msg = err_data.get("detail") or err_data.get("error", {}).get("message", "")
+        assert "To'qnashuv" in msg
+
+        # 3. Unpin back to clean state
+        unpin_res = await async_client.patch(
+            f"/timetable/entries/{e1_id}",
+            headers=headers,
+            json={"is_pinned": False},
+        )
+        assert unpin_res.status_code == 200
+        assert unpin_res.json()["is_pinned"] is False
+    finally:
+        async with SuperAsyncSessionLocal() as db:
+            await db.execute(delete(TimetableEntry).where(TimetableEntry.id.in_([e1_id, e2_id])))
+            await db.execute(delete(Teacher).where(Teacher.id == tch_id))
+            await db.execute(delete(Room).where(Room.id == room_id))
+            await db.execute(delete(Subject).where(Subject.id == subj_id))
+            await db.execute(delete(SchoolClass).where(SchoolClass.id == cls_id))
+            await db.commit()
+
+
+@pytest.mark.asyncio
+async def test_teacher_my_timetable_rbac_and_rls(async_client: AsyncClient, seeded_school_and_admin: dict):
+    import uuid
+    from sqlalchemy import delete
+    from database.connection import SuperAsyncSessionLocal
+    from database.models import Teacher, User, SchoolClass, Subject, Room, TimetableEntry
+    from core.security import get_password_hash
+
+    school_id = seeded_school_and_admin["school_id"]
+    other_school_id = str(uuid.uuid4())
+    user_a_id = str(uuid.uuid4())
+    teacher_a_id = str(uuid.uuid4())
+    teacher_b_id = str(uuid.uuid4())
+    cls_id = str(uuid.uuid4())
+    subj_id = str(uuid.uuid4())
+    room_id = str(uuid.uuid4())
+    e_a_id = str(uuid.uuid4())
+    e_b_id = str(uuid.uuid4())
+    user_a_email = f"teacher_{user_a_id[:8]}@maktab-test.uz"
+
+    async with SuperAsyncSessionLocal() as db:
+        db.add(
+            User(
+                id=user_a_id,
+                school_id=school_id,
+                role="TEACHER",
+                email=user_a_email,
+                password_hash=get_password_hash("TeacherPass123!"),
+                first_name="Test",
+                last_name="Teacher",
+                is_active=True,
+            )
+        )
+        await db.flush()
+        db.add_all([
+            Teacher(id=teacher_a_id, school_id=school_id, user_id=user_a_id, full_name="Teacher A", primary_subject="Matematika"),
+            Teacher(id=teacher_b_id, school_id=school_id, full_name="Teacher B", primary_subject="Fizika"),
+            SchoolClass(id=cls_id, school_id=school_id, name=f"6-T-{cls_id[:4]}", grade_level=6, student_count=25, shift="MORNING"),
+            Subject(id=subj_id, school_id=school_id, name="Fizika", short_code=f"F{subj_id[:4]}", required_room_type="GENERAL"),
+            Room(id=room_id, school_id=school_id, room_number=f"R2-{room_id[:4]}", capacity=30, room_type="GENERAL"),
+        ])
+        await db.flush()
+        db.add_all([
+            TimetableEntry(id=e_a_id, school_id=school_id, term=1, day="Seshanba", lesson_order=1, class_id=cls_id, subject_id=subj_id, teacher_id=teacher_a_id, room_id=room_id),
+            TimetableEntry(id=e_b_id, school_id=school_id, term=1, day="Seshanba", lesson_order=2, class_id=cls_id, subject_id=subj_id, teacher_id=teacher_b_id, room_id=room_id),
+        ])
+        await db.commit()
+
+    try:
+        login_res = await async_client.post(
+            "/auth/login",
+            json={"email": user_a_email, "password": "TeacherPass123!"},
+        )
+        assert login_res.status_code == 200
+        teacher_headers = {"Authorization": f"Bearer {login_res.json()['access_token']}"}
+        async_client.cookies.clear()
 
         # 1. RBAC: TEACHER cannot access /timetable/all or /timetable/by-class/{id}
         all_res = await async_client.get("/timetable/all?term=1", headers=teacher_headers)
         assert all_res.status_code == 403
 
         by_class_res = await async_client.get(
-            f"/timetable/by-class/{items[0]['class_id']}?term=1", headers=teacher_headers
+            f"/timetable/by-class/{cls_id}?term=1", headers=teacher_headers
         )
         assert by_class_res.status_code == 403
 
@@ -159,16 +192,15 @@ async def test_teacher_my_timetable_rbac_and_rls(async_client: AsyncClient, auth
         my_res = await async_client.get("/timetable/my?term=1", headers=teacher_headers)
         assert my_res.status_code == 200
         my_items = my_res.json()
-        assert len(my_items) >= 1
-        assert all(entry["teacher_id"] == teacher_a_id for entry in my_items)
-        assert all(entry["teacher_id"] != teacher_b_id for entry in my_items)
+        assert len(my_items) == 1
+        assert my_items[0]["teacher_id"] == teacher_a_id
 
         # 3. Unlinked TEACHER gets empty list
         unlinked_token = create_access_token(
             subject=str(uuid.uuid4()),
             school_id=school_id,
             role="TEACHER",
-            email="unlinked@maktab142.uz",
+            email="unlinked@maktab-test.uz",
         )
         unlinked_res = await async_client.get(
             "/timetable/my?term=1", headers={"Authorization": f"Bearer {unlinked_token}"}
@@ -189,9 +221,11 @@ async def test_teacher_my_timetable_rbac_and_rls(async_client: AsyncClient, auth
         assert rls_res.status_code == 200
         assert rls_res.json() == []
     finally:
-        async with AsyncSessionLocal() as db:
-            await db.execute(
-                update(Teacher).where(Teacher.id == teacher_a_id).values(user_id=orig_user_id)
-            )
+        async with SuperAsyncSessionLocal() as db:
+            await db.execute(delete(TimetableEntry).where(TimetableEntry.id.in_([e_a_id, e_b_id])))
+            await db.execute(delete(Teacher).where(Teacher.id.in_([teacher_a_id, teacher_b_id])))
+            await db.execute(delete(Room).where(Room.id == room_id))
+            await db.execute(delete(Subject).where(Subject.id == subj_id))
+            await db.execute(delete(SchoolClass).where(SchoolClass.id == cls_id))
             await db.execute(delete(User).where(User.id == user_a_id))
             await db.commit()

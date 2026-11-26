@@ -31,11 +31,11 @@ def test_password_policy_validation():
         LoginRequest(email="test@maktab.uz", password="PasswordOnly")
 
 @pytest.mark.asyncio
-async def test_login_and_refresh_flow(async_client: AsyncClient):
-    # Test valid login with seeded admin
+async def test_login_and_refresh_flow(async_client: AsyncClient, seeded_school_and_admin: dict):
+    # Test valid login with fixture admin
     login_res = await async_client.post("/auth/login", json={
-        "email": "admin@maktab142.uz",
-        "password": "Admin123!"
+        "email": seeded_school_and_admin["email"],
+        "password": seeded_school_and_admin["password"],
     })
     assert login_res.status_code == 200
     data = login_res.json()
@@ -61,7 +61,7 @@ async def test_login_and_refresh_flow(async_client: AsyncClient):
         headers={"Authorization": f"Bearer {refresh_data['access_token']}"}
     )
     assert me_res.status_code == 200
-    assert me_res.json()["email"] == "admin@maktab142.uz"
+    assert me_res.json()["email"] == seeded_school_and_admin["email"]
 
 
 def test_access_token_expiry_within_15_to_30_minutes():
@@ -69,12 +69,12 @@ def test_access_token_expiry_within_15_to_30_minutes():
 
 
 @pytest.mark.asyncio
-async def test_refresh_rotation_and_reuse_detection(async_client: AsyncClient):
+async def test_refresh_rotation_and_reuse_detection(async_client: AsyncClient, seeded_school_and_admin: dict):
     # 1. Login to get initial refresh cookie (token_1)
     async_client.cookies.clear()
     login_res = await async_client.post("/auth/login", json={
-        "email": "admin@maktab142.uz",
-        "password": "Admin123!"
+        "email": seeded_school_and_admin["email"],
+        "password": seeded_school_and_admin["password"],
     })
     assert login_res.status_code == 200
     token_1 = login_res.cookies.get("refresh_token")
@@ -101,11 +101,11 @@ async def test_refresh_rotation_and_reuse_detection(async_client: AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_logout_revokes_token_and_clears_cookie(async_client: AsyncClient):
+async def test_logout_revokes_token_and_clears_cookie(async_client: AsyncClient, seeded_school_and_admin: dict):
     async_client.cookies.clear()
     login_res = await async_client.post("/auth/login", json={
-        "email": "admin@maktab142.uz",
-        "password": "Admin123!"
+        "email": seeded_school_and_admin["email"],
+        "password": seeded_school_and_admin["password"],
     })
     assert login_res.status_code == 200
     token_1 = login_res.cookies.get("refresh_token")
@@ -123,13 +123,13 @@ async def test_logout_revokes_token_and_clears_cookie(async_client: AsyncClient)
 
 
 @pytest.mark.asyncio
-async def test_expired_refresh_token_rejected(async_client: AsyncClient):
+async def test_expired_refresh_token_rejected(async_client: AsyncClient, seeded_school_and_admin: dict):
     from datetime import timedelta
     expired_token = create_refresh_token(
         subject="expired-user",
-        school_id="94561d8a-2ca8-4bb2-9b94-e67a53fc472c",
+        school_id=seeded_school_and_admin["school_id"],
         role="SCHOOL_ADMIN",
-        email="admin@maktab142.uz",
+        email=seeded_school_and_admin["email"],
         expires_delta=timedelta(seconds=-10),
     )
     async_client.cookies.set("refresh_token", expired_token)
@@ -138,20 +138,22 @@ async def test_expired_refresh_token_rejected(async_client: AsyncClient):
     async_client.cookies.clear()
 
 @pytest.mark.asyncio
-async def test_invalid_login(async_client: AsyncClient):
+async def test_invalid_login(async_client: AsyncClient, seeded_school_and_admin: dict):
     res = await async_client.post("/auth/login", json={
-        "email": "admin@maktab142.uz",
+        "email": seeded_school_and_admin["email"],
         "password": "WrongPassword99!"
     })
     assert res.status_code == 401
 
 
 def test_access_token_has_type_access():
+    import uuid
+    school_id = str(uuid.uuid4())
     token = create_access_token(
         subject="user-1",
-        school_id="94561d8a-2ca8-4bb2-9b94-e67a53fc472c",
+        school_id=school_id,
         role="SCHOOL_ADMIN",
-        email="admin@maktab142.uz"
+        email="admin@test.uz"
     )
     payload = decode_token(token)
     assert payload.get("type") == "access"
@@ -159,11 +161,12 @@ def test_access_token_has_type_access():
 
 @pytest.mark.asyncio
 async def test_refresh_token_rejected_on_me(async_client: AsyncClient):
+    import uuid
     refresh_token = create_refresh_token(
         subject="user-1",
-        school_id="94561d8a-2ca8-4bb2-9b94-e67a53fc472c",
+        school_id=str(uuid.uuid4()),
         role="SCHOOL_ADMIN",
-        email="admin@maktab142.uz"
+        email="admin@test.uz"
     )
     res = await async_client.get(
         "/auth/me",
@@ -174,11 +177,12 @@ async def test_refresh_token_rejected_on_me(async_client: AsyncClient):
 
 @pytest.mark.asyncio
 async def test_token_without_type_rejected_on_me(async_client: AsyncClient):
+    import uuid
     legacy_token = jwt.encode(
         {
             "sub": "user-1",
-            "email": "admin@maktab142.uz",
-            "school_id": "94561d8a-2ca8-4bb2-9b94-e67a53fc472c",
+            "email": "admin@test.uz",
+            "school_id": str(uuid.uuid4()),
             "role": "SCHOOL_ADMIN",
         },
         settings.SECRET_KEY,
@@ -192,12 +196,12 @@ async def test_token_without_type_rejected_on_me(async_client: AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_teacher_put_school_forbidden_and_get_allowed(async_client: AsyncClient):
+async def test_teacher_put_school_forbidden_and_get_allowed(async_client: AsyncClient, seeded_school_and_admin: dict):
     teacher_token = create_access_token(
         subject="teacher-1",
-        school_id="94561d8a-2ca8-4bb2-9b94-e67a53fc472c",
+        school_id=seeded_school_and_admin["school_id"],
         role="TEACHER",
-        email="teacher@maktab142.uz"
+        email="teacher@test.uz"
     )
     headers = {"Authorization": f"Bearer {teacher_token}"}
 
@@ -317,7 +321,7 @@ async def test_login_with_72_and_80_byte_passwords(async_client: AsyncClient):
     mock_user.id = "u-72"
     mock_user.email = "u72@maktab.uz"
     mock_user.role = "TEACHER"
-    mock_user.school_id = "94561d8a-2ca8-4bb2-9b94-e67a53fc472c"
+    mock_user.school_id = str(uuid.uuid4()) if False else "school-72"
     mock_user.is_active = True
     mock_user.password_hash = get_password_hash(pw_72)
 
