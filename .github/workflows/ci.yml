@@ -89,5 +89,22 @@ jobs:
       - name: Create .env from .env.example for compose build
         run: cp .env.example .env
 
-      - name: Build Docker Compose images
-        run: docker compose build
+      - name: Build and start Docker Compose services
+        run: docker compose up --build -d
+
+      - name: Wait for backend /health to return 200
+        run: |
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:8000/health; then
+              echo ""
+              echo "Backend /health is 200 OK"
+              exit 0
+            fi
+            sleep 2
+          done
+          docker compose logs backend postgres worker
+          exit 1
+
+      - name: Tear down Docker Compose services
+        if: always()
+        run: docker compose down -v

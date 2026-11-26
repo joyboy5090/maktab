@@ -35,6 +35,7 @@ services:
     environment:
       DATABASE_URL: ${DATABASE_URL:?DATABASE_URL .env faylida ko'rsatilishi shart}
       ALEMBIC_DATABASE_URL: ${ALEMBIC_DATABASE_URL:?ALEMBIC_DATABASE_URL .env faylida ko'rsatilishi shart}
+      MAKTAB_APP_PASSWORD: ${MAKTAB_APP_PASSWORD:?MAKTAB_APP_PASSWORD .env faylida ko'rsatilishi shart}
       SECRET_KEY: ${SECRET_KEY:?SECRET_KEY .env faylida ko'rsatilishi shart}
       ALGORITHM: ${ALGORITHM:-HS256}
       ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-120}
@@ -59,6 +60,7 @@ services:
     environment:
       DATABASE_URL: ${DATABASE_URL:?DATABASE_URL .env faylida ko'rsatilishi shart}
       ALEMBIC_DATABASE_URL: ${ALEMBIC_DATABASE_URL:?ALEMBIC_DATABASE_URL .env faylida ko'rsatilishi shart}
+      MAKTAB_APP_PASSWORD: ${MAKTAB_APP_PASSWORD:?MAKTAB_APP_PASSWORD .env faylida ko'rsatilishi shart}
       SECRET_KEY: ${SECRET_KEY:?SECRET_KEY .env faylida ko'rsatilishi shart}
     depends_on:
       postgres:
